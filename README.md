@@ -7,7 +7,7 @@ similar to shadowplay on windows. This is the fastest screen recording tool for 
 This screen recorder can be used for recording your desktop offline, for live streaming and for nvidia shadowplay-like instant replay,
 where only the last few minutes are saved.
 
-This software can also take screenshots.
+This software can also take screenshots or record audio.
 
 This is a cli-only tool, if you want an UI for this check out [GPU Screen Recorder GTK](https://git.dec05eba.com/gpu-screen-recorder-gtk/) or if you prefer a ShadowPlay-like UI then check out [GPU Screen Recorder UI](https://git.dec05eba.com/gpu-screen-recorder-ui/).
 
