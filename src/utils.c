@@ -140,21 +140,60 @@ void for_each_active_monitor_output_x11_not_cached(Display *display, active_moni
     XRRFreeScreenResources(screen_res);
 }
 
-/* TODO: Support more connector types */
+typedef struct {
+    const char *prefix;
+    int connector_type;
+} gsr_connector_type_prefix;
+
+/* The display server monitor names are not always the same as the drm connector names. Gnome names the
+   HDMI-A connector HDMI and the Writeback connector WRITEBACK, while kwin and wlroots use the drm names.
+   A prefix that is the start of another prefix has to come after it, to not match the wrong connector type */
+static const gsr_connector_type_prefix connector_type_prefixes[] = {
+    { "HDMI-A-",      DRM_MODE_CONNECTOR_HDMIA },
+    { "HDMI-B-",      DRM_MODE_CONNECTOR_HDMIB },
+    { "HDMI-",        DRM_MODE_CONNECTOR_HDMIA },
+    { "DisplayPort-", DRM_MODE_CONNECTOR_DisplayPort },
+    { "DP-",          DRM_MODE_CONNECTOR_DisplayPort },
+    { "eDP-",         DRM_MODE_CONNECTOR_eDP },
+    { "DVI-I-",       DRM_MODE_CONNECTOR_DVII },
+    { "DVI-D-",       DRM_MODE_CONNECTOR_DVID },
+    { "DVI-A-",       DRM_MODE_CONNECTOR_DVIA },
+    { "VGA-",         DRM_MODE_CONNECTOR_VGA },
+    { "Composite-",   DRM_MODE_CONNECTOR_Composite },
+    { "SVIDEO-",      DRM_MODE_CONNECTOR_SVIDEO },
+    { "LVDS-",        DRM_MODE_CONNECTOR_LVDS },
+    { "Component-",   DRM_MODE_CONNECTOR_Component },
+    { "DIN-",         DRM_MODE_CONNECTOR_9PinDIN },
+    { "TV-",          DRM_MODE_CONNECTOR_TV },
+    { "Virtual-",     DRM_MODE_CONNECTOR_VIRTUAL },
+    { "DSI-",         DRM_MODE_CONNECTOR_DSI },
+    { "DPI-",         DRM_MODE_CONNECTOR_DPI },
+    { "Writeback-",   DRM_MODE_CONNECTOR_WRITEBACK },
+    { "WRITEBACK-",   DRM_MODE_CONNECTOR_WRITEBACK },
+    { "SPI-",         DRM_MODE_CONNECTOR_SPI },
+    { "USB-",         DRM_MODE_CONNECTOR_USB },
+};
+
 int get_connector_type_by_name(const char *name) {
-    int len = strlen(name);
-    if(len >= 5 && strncmp(name, "HDMI-", 5) == 0)
-        return 1;
-    else if(len >= 3 && strncmp(name, "DP-", 3) == 0)
-        return 2;
-    else if(len >= 12 && strncmp(name, "DisplayPort-", 12) == 0)
-        return 3;
-    else if(len >= 4 && strncmp(name, "eDP-", 4) == 0)
-        return 4;
-    else if(len >= 4 && strncmp(name, "DVI-", 4) == 0)
-        return 5;
-    else
-        return -1;
+    for(size_t i = 0; i < sizeof(connector_type_prefixes)/sizeof(*connector_type_prefixes); ++i) {
+        if(strncmp(name, connector_type_prefixes[i].prefix, strlen(connector_type_prefixes[i].prefix)) == 0)
+            return connector_type_prefixes[i].connector_type;
+    }
+    return -1;
+}
+
+/* Returns true if the two monitor names refer to the same drm connector, even when the
+   display server and drm name the connector type differently */
+bool monitor_names_equal(const char *name1, const char *name2) {
+    if(strcmp(name1, name2) == 0)
+        return true;
+
+    const int connector_type = get_connector_type_by_name(name1);
+    if(connector_type == -1 || connector_type != get_connector_type_by_name(name2))
+        return false;
+
+    const int connector_type_id = get_connector_type_id_by_name(name1);
+    return connector_type_id != -1 && connector_type_id == get_connector_type_id_by_name(name2);
 }
 
 int get_connector_type_id_by_name(const char *name) {
@@ -224,7 +263,6 @@ static void for_each_active_monitor_output_drm(const char *card_path, active_mon
 
             if(connection_name && crtc_id > 0 && crtc) {
                 const int display_name_len = snprintf(display_name, sizeof(display_name), "%s-%u", connection_name, connector->connector_type_id);
-                const int connector_type_index_name = get_connector_type_by_name(display_name);
 
                 const gsr_monitor monitor = {
                     .name = display_name,
@@ -235,7 +273,7 @@ static void for_each_active_monitor_output_drm(const char *card_path, active_mon
                     .logical_size = { .x = (int)crtc->width, .y = (int)crtc->height },
                     .connector_id = connector->connector_id,
                     .rotation = GSR_MONITOR_ROT_0,
-                    .monitor_identifier = connector_type_index_name != -1 ? monitor_identifier_from_type_and_count(connector_type_index_name, connector->connector_type_id) : 0
+                    .monitor_identifier = monitor_identifier_from_type_and_count(connector->connector_type, connector->connector_type_id)
                 };
                 callback(&monitor, userdata);
             }
@@ -308,7 +346,7 @@ void for_each_active_monitor_output(const gsr_window *window, const char *card_p
 
 static void get_monitor_by_name_callback(const gsr_monitor *monitor, void *userdata) {
     get_monitor_by_name_userdata *data = (get_monitor_by_name_userdata*)userdata;
-    if(!data->found_monitor && strcmp(data->name, monitor->name) == 0) {
+    if(!data->found_monitor && monitor_names_equal(data->name, monitor->name)) {
         data->monitor->pos = monitor->pos;
         data->monitor->size = monitor->size;
         data->monitor->logical_pos = monitor->logical_pos;
@@ -365,7 +403,7 @@ static void get_monitor_by_name_wayland_callback(const gsr_monitor *monitor, voi
 static void get_monitor_by_connector_id_callback(const gsr_monitor *monitor, void *userdata) {
     get_monitor_by_connector_id_userdata *data = (get_monitor_by_connector_id_userdata*)userdata;
     if(monitor->connector_id == data->monitor->connector_id ||
-        (!monitor->connector_id && monitor->monitor_identifier == data->monitor->monitor_identifier))
+        (!monitor->connector_id && monitor->monitor_identifier && monitor->monitor_identifier == data->monitor->monitor_identifier))
     {
         data->rotation = monitor->rotation;
         data->position = monitor->pos;

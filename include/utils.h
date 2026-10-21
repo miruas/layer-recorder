@@ -65,6 +65,9 @@ bool gsr_drm_device_paths_equal(const char *path1, const char *path2);
 bool gsr_card_path_get_pci_bus_id(const char *card_path, char *pci_bus_id);
 
 int get_connector_type_by_name(const char *name);
+/* Returns true if the two monitor names refer to the same drm connector. The display server monitor
+   names are not always the same as the drm monitor names (gnome names the HDMI-A-1 connector HDMI-1) */
+bool monitor_names_equal(const char *name1, const char *name2);
 int get_connector_type_id_by_name(const char *name);
 uint32_t monitor_identifier_from_type_and_count(int monitor_type_index, int monitor_type_count);
 

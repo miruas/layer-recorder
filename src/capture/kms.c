@@ -141,7 +141,6 @@ static void gsr_capture_kms_create_input_texture_ids(gsr_capture_kms *self) {
 typedef struct {
     MonitorId *monitor_id;
     const char *monitor_to_capture;
-    int monitor_to_capture_len;
     int num_monitors;
 } MonitorCallbackUserdata;
 
@@ -149,7 +148,7 @@ static void monitor_callback(const gsr_monitor *monitor, void *userdata) {
     MonitorCallbackUserdata *monitor_callback_userdata = userdata;
     ++monitor_callback_userdata->num_monitors;
 
-    if(monitor_callback_userdata->monitor_to_capture_len != monitor->name_len || memcmp(monitor_callback_userdata->monitor_to_capture, monitor->name, monitor->name_len) != 0)
+    if(!monitor_names_equal(monitor_callback_userdata->monitor_to_capture, monitor->name))
         return;
 
     if(monitor_callback_userdata->monitor_id->num_connector_ids < MAX_CONNECTOR_IDS) {
@@ -184,7 +183,7 @@ static int gsr_capture_kms_start(gsr_capture *cap, gsr_capture_metadata *capture
 
     MonitorCallbackUserdata monitor_callback_userdata = {
         &self->monitor_id,
-        self->params.display_to_capture, strlen(self->params.display_to_capture),
+        self->params.display_to_capture,
         0,
     };
     for_each_active_monitor_output(self->params.egl->window, self->params.egl->card_path, connection_type, monitor_callback, &monitor_callback_userdata);

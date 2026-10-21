@@ -442,3 +442,5 @@ Fix build on ffmpeg 4.4 (used by ubuntu 22.04).
 
 Add IPC to change the monitor that is being recorded (or add/remove capture targets). This is needed to make recording in the ui change which monitor it records when "focused monitor" option is used.
     Unfortunately it cant work that nicely because the other monitor might be on another gpu. This also applies to when capturing multiple monitors at the same time (-w "DP1|DP2").
+
+There is a risk that systems with multiple gpus and the same port connection has the same name for -w.
