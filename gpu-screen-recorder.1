@@ -1,4 +1,4 @@
-.TH GPU-SCREEN-RECORDER 1 "2026-08-18" "6.0.1" "GPU Screen Recorder Manual"
+.TH GPU-SCREEN-RECORDER 1 "2026-10-22" "6.1.5" "GPU Screen Recorder Manual"
 .SH NAME
 gpu-screen-recorder \- The fastest screen recording tool for Linux
 .SH SYNOPSIS
@@ -458,6 +458,14 @@ Show version (5.10.2).
 .TP
 .B \-\-info
 Show system info (codecs, capture options).
+
+Note that this command can be slow on some systems. It's recommended in applications that you use it once to list supported video codecs
+.br
+and then use
+.B --list-capture-options
+or
+.B --list-monitors
+which is faster.
 .TP
 .B \-\-list\-capture\-options
 List available capture sources (window, monitors, portal, v4l2 device path).

@@ -498,7 +498,7 @@ bool gl_get_gpu_info(gsr_egl *egl, gsr_gpu_info *info) {
     else if(strstr(gl_vendor, "Mesa") && gl_renderer && strstr(gl_renderer, "Apple"))
         info->vendor = GSR_GPU_VENDOR_APPLE;
     else {
-        gsr_log(GSR_LOG_LEVEL_ERROR, "unknown gpu vendor: %s", gl_vendor);
+        gsr_log(GSR_LOG_LEVEL_ERROR, "unknown gpu vendor: %s, renderer: %s", gl_vendor, gl_renderer ? gl_renderer : "Unknown");
         return false;
     }
 
