@@ -350,3 +350,5 @@ This appears to be a bug in wlroots or sway. Capturing a window instead fixes th
 GPU Screen Recorder doesn't have the option to do that yet, but you can change the volume by starting recording and then open `pavucontrol`, go to the `Recording` tab and set the volume there. The system will remember the settings even after reboot, as long as the audio capture options remain the same.
 ## My game and recorded video is stuttering but my frame rate is high
 This is an issue with linux kernel graphics scheduling when the gpu usage is 99-100%. The only workaround at the moment is to either run X11 with the compositor disabled or on Wayland it may work if you disable the screen tearing option in the desktop environment/compositor display settings and/or enable vsync in the game.
+## DisplayLink doesn't work
+GPU Screen Recorder doesn't support DisplayLink at the moment with monitor capture. On X11 it may still work, if it doesn't you can record a window instead (`-w <window_id>`). On Wayland you have to record with desktop portal instead (`-w portal`).

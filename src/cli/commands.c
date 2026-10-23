@@ -58,6 +58,9 @@ static void list_gpu_info(gsr_egl *egl) {
         case GSR_GPU_VENDOR_APPLE:
             printf("vendor|apple\n");
             break;
+        case GSR_GPU_VENDOR_UNKNOWN:
+            printf("vendor|unknown\n");
+            break;
     }
     printf("card_path|%s\n", egl->card_path);
 }

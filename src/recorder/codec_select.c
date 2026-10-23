@@ -37,7 +37,8 @@ gsr_video_encoder* create_video_encoder(gsr_egl *egl, const gsr_recorder_setting
         case GSR_GPU_VENDOR_AMD:
         case GSR_GPU_VENDOR_INTEL:
         case GSR_GPU_VENDOR_BROADCOM:
-        case GSR_GPU_VENDOR_APPLE: {
+        case GSR_GPU_VENDOR_APPLE:
+        case GSR_GPU_VENDOR_UNKNOWN: {
             gsr_video_encoder_vaapi_params params;
             params.egl = egl;
             params.color_depth = color_depth;
@@ -73,6 +74,7 @@ bool get_supported_video_codecs(gsr_egl *egl, gsr_video_codec video_codec, bool 
         case GSR_GPU_VENDOR_INTEL:
         case GSR_GPU_VENDOR_BROADCOM:
         case GSR_GPU_VENDOR_APPLE:
+        case GSR_GPU_VENDOR_UNKNOWN:
             return gsr_get_supported_video_codecs_vaapi(video_codecs, egl->card_path, cleanup);
         case GSR_GPU_VENDOR_NVIDIA:
             return gsr_get_supported_video_codecs_nvenc(video_codecs, egl->card_path, cleanup);

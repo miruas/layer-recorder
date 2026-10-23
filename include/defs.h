@@ -11,7 +11,8 @@ typedef enum {
     GSR_GPU_VENDOR_INTEL,
     GSR_GPU_VENDOR_NVIDIA,
     GSR_GPU_VENDOR_BROADCOM,
-    GSR_GPU_VENDOR_APPLE
+    GSR_GPU_VENDOR_APPLE,
+    GSR_GPU_VENDOR_UNKNOWN,
 } gsr_gpu_vendor;
 
 typedef struct {
