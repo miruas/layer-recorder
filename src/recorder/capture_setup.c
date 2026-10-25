@@ -297,7 +297,8 @@ static gsr_capture* create_monitor_capture(const gsr_recorder_settings *settings
     if(monitor_capture_use_drm(egl->window, egl->gpu_info.vendor)) {
         if(!deps->kms_client_initialized) {
             deps->kms_client_initialized = true;
-            const int kms_init_res = gsr_kms_client_init(&deps->kms_client, egl->card_path);
+            const char *kms_card_path = egl->kms_card_path[0] != '\0' ? egl->kms_card_path : egl->card_path;
+            const int kms_init_res = gsr_kms_client_init(&deps->kms_client, kms_card_path);
             if(kms_init_res != 0) {
                 *error = kms_init_res < 0 ? GSR_ERROR_GENERIC : -kms_init_res;
                 return NULL;
@@ -312,6 +313,7 @@ static gsr_capture* create_monitor_capture(const gsr_recorder_settings *settings
         gsr_capture_kms_params kms_params;
         memset(&kms_params, 0, sizeof(kms_params));
         kms_params.egl = egl;
+        kms_params.kms_card_path = egl->kms_card_path[0] != '\0' ? egl->kms_card_path : egl->card_path;
         kms_params.x11_cursor = &deps->x11_cursor;
         kms_params.kms_response = &deps->kms_response;
         kms_params.kde_night_light = deps->kde_night_light;

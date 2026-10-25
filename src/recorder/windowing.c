@@ -143,7 +143,9 @@ int gsr_windowing_load_egl(gsr_windowing *self, const gsr_windowing_params *para
     char monitor_card_path[GSR_DRI_CARD_PATH_MAX_SIZE];
     const bool monitor_card_path_found = get_monitor_to_capture_card_path(self->window, params, monitor_card_path);
 
-    if(!gsr_egl_load(&self->egl, self->window, params->monitor_capture, params->gl_debug, monitor_card_path_found ? monitor_card_path : NULL)) {
+    char monitor_render_path[128];
+    const bool monitor_gpu_usable = monitor_card_path_found && gsr_card_path_get_render_path(monitor_card_path, monitor_render_path);
+    if(!gsr_egl_load(&self->egl, self->window, params->monitor_capture, params->gl_debug, monitor_gpu_usable ? monitor_card_path : NULL)) {
         gsr_log(GSR_LOG_LEVEL_ERROR, "failed to load opengl");
         return GSR_ERROR_OPENGL_LOAD_FAILED;
     }
@@ -157,7 +159,14 @@ int gsr_windowing_load_egl(gsr_windowing *self, const gsr_windowing_params *para
     else
         self->egl.card_path[0] = '\0';
 
-    if(self->egl.card_path[0] == '\0' && monitor_capture_use_drm(self->window, self->egl.gpu_info.vendor))
+    if(monitor_card_path_found)
+        snprintf(self->egl.kms_card_path, sizeof(self->egl.kms_card_path), "%s", monitor_card_path);
+    else if(self->egl.card_path[0] != '\0')
+        snprintf(self->egl.kms_card_path, sizeof(self->egl.kms_card_path), "%s", self->egl.card_path);
+    else
+        self->egl.kms_card_path[0] = '\0';
+
+    if(self->egl.kms_card_path[0] == '\0' && monitor_capture_use_drm(self->window, self->egl.gpu_info.vendor))
         self->card_path_found = false;
 
     if(monitor_card_path_found && monitor_to_capture_specified && gsr_egl_uses_card(&self->egl, monitor_card_path))

@@ -173,7 +173,7 @@ static int gsr_capture_kms_start(gsr_capture *cap, gsr_capture_metadata *capture
     gsr_capture_kms *self = cap->priv;
 
     gsr_capture_kms_create_input_texture_ids(self);
-    self->drm_card_fd = open(self->params.egl->card_path, O_RDONLY);
+    self->drm_card_fd = open(self->params.kms_card_path, O_RDONLY);
 
     gsr_monitor monitor;
     self->monitor_id.num_connector_ids = 0;
@@ -186,9 +186,9 @@ static int gsr_capture_kms_start(gsr_capture *cap, gsr_capture_metadata *capture
         self->params.display_to_capture,
         0,
     };
-    for_each_active_monitor_output(self->params.egl->window, self->params.egl->card_path, connection_type, monitor_callback, &monitor_callback_userdata);
+    for_each_active_monitor_output(self->params.egl->window, self->params.kms_card_path, connection_type, monitor_callback, &monitor_callback_userdata);
 
-    if(!get_monitor_by_name(self->params.egl->window, self->params.egl->card_path, connection_type, self->params.display_to_capture, &monitor)) {
+    if(!get_monitor_by_name(self->params.egl->window, self->params.kms_card_path, connection_type, self->params.display_to_capture, &monitor)) {
         gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_capture_kms_start: failed to find monitor by name \"%s\"", self->params.display_to_capture);
         gsr_capture_kms_stop(self);
         return -1;
@@ -225,7 +225,7 @@ static int gsr_capture_kms_start(gsr_capture *cap, gsr_capture_metadata *capture
 //     gsr_capture_kms *self = cap->priv;
 
 //     if(self->drm_fd <= 0)
-//         self->drm_fd = open(self->params.egl->card_path, O_RDONLY);
+//         self->drm_fd = open(self->params.kms_card_path, O_RDONLY);
 
 //     if(self->drm_fd <= 0)
 //         return;
@@ -818,7 +818,7 @@ static void gsr_capture_kms_update_connector_ids(gsr_capture_kms *self) {
     // for_each_active_monitor_output(self->params.egl->window, self->params.egl->card_path, connection_type, monitor_callback, &monitor_callback_userdata);
 
     gsr_monitor monitor;
-    if(!get_monitor_by_name(self->params.egl->window, self->params.egl->card_path, connection_type, self->params.display_to_capture, &monitor)) {
+    if(!get_monitor_by_name(self->params.egl->window, self->params.kms_card_path, connection_type, self->params.display_to_capture, &monitor)) {
         gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_capture_kms_update_connector_ids: failed to find monitor by name \"%s\"", self->params.display_to_capture);
         return;
     }

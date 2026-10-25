@@ -520,8 +520,7 @@ static const char* unsupported_drm_drivers[] = {
     "vgem",
     "simpledrm",
     "ofdrm",
-    "udl",
-    "evdi"
+    "udl"
 };
 
 static bool drm_driver_is_unsupported(const char *driver_name) {
@@ -539,7 +538,12 @@ static bool drm_fd_is_hardware_accelerated_gpu(int drm_fd) {
         return false;
 
     bool hardware_accelerated = false;
-    if(!drm_driver_is_unsupported(ver->name)) {
+    if(strcmp(ver->name, "evdi") == 0) {
+        drmModeResPtr resources = drmModeGetResources(drm_fd);
+        hardware_accelerated = resources != NULL && resources->count_connectors > 0;
+        if(resources)
+            drmModeFreeResources(resources);
+    } else if(!drm_driver_is_unsupported(ver->name)) {
         char *render_path = drmGetRenderDeviceNameFromFd(drm_fd);
         hardware_accelerated = render_path != NULL;
         free(render_path);

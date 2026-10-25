@@ -8,6 +8,7 @@
 
 typedef struct {
     gsr_egl *egl;
+    const char *kms_card_path;
     gsr_cursor *x11_cursor;
     gsr_kms_response *kms_response;
     gsr_kde_night_light *kde_night_light; /* optional */

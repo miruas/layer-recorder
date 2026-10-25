@@ -212,6 +212,7 @@ struct gsr_egl {
     gsr_gpu_info gpu_info;
 
     char card_path[128];
+    char kms_card_path[128];
     int vulkan_device_index;
 
     int32_t (*eglGetError)(void);
