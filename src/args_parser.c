@@ -726,8 +726,6 @@ void args_parser_deinit(args_parser *self) {
 }
 
 bool args_parser_validate_with_gl_info(args_parser *self, gsr_egl *egl) {
-    const bool wayland = gsr_window_get_display_server(egl->window) == GSR_DISPLAY_SERVER_WAYLAND;
-
     if(self->settings.bitrate_mode == (gsr_bitrate_mode)GSR_BITRATE_MODE_AUTO) {
         // QP is broken on steam deck, see https://github.com/ValveSoftware/SteamOS/issues/1609
         self->settings.bitrate_mode = egl->gpu_info.is_steam_deck ? GSR_BITRATE_MODE_VBR : GSR_BITRATE_MODE_QP;
@@ -751,12 +749,6 @@ bool args_parser_validate_with_gl_info(args_parser *self, gsr_egl *egl) {
     if(egl->gpu_info.vendor == GSR_GPU_VENDOR_NVIDIA && egl->gpu_info.gpu_version != 0 && egl->gpu_info.gpu_version < 900) {
         gsr_log(GSR_LOG_LEVEL_INFO, "your gpu appears to be very old (older than maxwell architecture). Switching to lower preset");
         self->settings.very_old_gpu = true;
-    }
-
-    if(video_codec_is_hdr(self->settings.video_codec) && !wayland) {
-        gsr_log(GSR_LOG_LEVEL_ERROR, "hdr video codec option %s is not available on X11", video_codec_to_string(self->settings.video_codec));
-        usage();
-        return false;
     }
 
     return true;

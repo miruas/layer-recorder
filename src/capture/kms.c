@@ -22,6 +22,7 @@
 #define HDMI_EOTF_SMPTE_ST2084 2
 #define HDR_PEAK_LUMINANCE_FALLBACK 1000.0f
 #define SDR_WHITE_LUMINANCE_REFERENCE 203.0f
+#define PQ_MAX_LUMINANCE 10000.0f
 
 #define MAX_CONNECTOR_IDS 32
 
@@ -60,6 +61,7 @@ typedef struct {
     uint64_t gamma_lut_blob_id;
     uint64_t gamma_lut_uploaded_blob_id;
     bool crtc_color_ops_active;
+    bool degamma_lut_active;
 
     bool night_light_message_shown;
     bool hdr_luminance_message_shown;
@@ -287,11 +289,18 @@ static float hdr_metadata_get_max_luminance(const struct hdr_output_metadata *hd
     float max_luminance = hdr_metadata->hdmi_metadata_type1.max_cll;
     if(max_luminance <= 0.0f)
         max_luminance = hdr_metadata->hdmi_metadata_type1.max_display_mastering_luminance;
-    return max_luminance;
+    /* Some games set values above the maximum luminance that pq can represent */
+    return max_luminance > PQ_MAX_LUMINANCE ? PQ_MAX_LUMINANCE : max_luminance;
 }
 
-static bool drm_plane_is_hdr(const gsr_kms_response_item *drm_fd) {
+static bool drm_connector_is_hdr(const gsr_kms_response_item *drm_fd) {
     return drm_fd->has_hdr_metadata && hdr_metadata_is_supported_format(&drm_fd->hdr_metadata);
+}
+
+/* On x11 the x server shows the sdr desktop on an hdr monitor by converting it to hdr with the crtc degamma lut, ctm and gamma lut.
+   The plane then contains sdr content even though the monitor is in hdr mode */
+static bool gsr_capture_kms_plane_is_hdr(const gsr_capture_kms *self, const gsr_kms_response_item *drm_fd) {
+    return drm_connector_is_hdr(drm_fd) && !(self->is_x11 && self->degamma_lut_active);
 }
 
 static void gsr_capture_kms_resolve_crtc_color_properties(gsr_capture_kms *self, uint32_t connector_id) {
@@ -341,6 +350,7 @@ static void gsr_capture_kms_resolve_crtc_color_properties(gsr_capture_kms *self,
 static void gsr_capture_kms_read_crtc_color_ops(gsr_capture_kms *self) {
     self->gamma_lut_blob_id = 0;
     self->crtc_color_ops_active = false;
+    self->degamma_lut_active = false;
 
     if(self->crtc_id == 0)
         return;
@@ -356,7 +366,10 @@ static void gsr_capture_kms_read_crtc_color_ops(gsr_capture_kms *self) {
         if(properties->props[i] == self->gamma_lut_property_id) {
             self->gamma_lut_blob_id = properties->prop_values[i];
             self->crtc_color_ops_active = true;
-        } else if(properties->props[i] == self->ctm_property_id || properties->props[i] == self->degamma_lut_property_id) {
+        } else if(properties->props[i] == self->degamma_lut_property_id) {
+            self->degamma_lut_active = true;
+            self->crtc_color_ops_active = true;
+        } else if(properties->props[i] == self->ctm_property_id) {
             self->crtc_color_ops_active = true;
         }
     }
@@ -411,7 +424,8 @@ static void gsr_capture_kms_get_monitor_hdr_info(gsr_capture_kms *self, const gs
     if(!gsr_window_get_monitor_hdr_info(self->params.egl->window, self->params.display_to_capture, monitor_hdr_info))
         memset(monitor_hdr_info, 0, sizeof(*monitor_hdr_info));
 
-    if(monitor_hdr_info->max_peak_luminance <= 0.0f)
+    /* The hdr metadata of the sdr desktop on x11 describes the sdr desktop and not the content that the monitor can show */
+    if(monitor_hdr_info->max_peak_luminance <= 0.0f && gsr_capture_kms_plane_is_hdr(self, drm_fd))
         monitor_hdr_info->max_peak_luminance = hdr_metadata_get_max_luminance(&drm_fd->hdr_metadata);
 
     if(monitor_hdr_info->max_peak_luminance <= 0.0f)
@@ -436,7 +450,7 @@ static void mat3_multiply(const float a[9], const float b[9], float result[9]) {
 }
 
 static void gsr_capture_kms_update_hdr_color_transforms(gsr_capture_kms *self, gsr_color_conversion *color_conversion, const gsr_kms_response_item *drm_fd) {
-    const bool plane_is_hdr = drm_plane_is_hdr(drm_fd);
+    const bool plane_is_hdr = gsr_capture_kms_plane_is_hdr(self, drm_fd);
 
     gsr_monitor_hdr_info monitor_hdr_info;
     gsr_capture_kms_get_monitor_hdr_info(self, drm_fd, &monitor_hdr_info);
@@ -473,7 +487,7 @@ static void gsr_capture_kms_update_hdr_color_transforms(gsr_capture_kms *self, g
     const bool convert_sdr_to_hdr = self->params.hdr && !plane_is_hdr;
     if(convert_sdr_to_hdr && !self->hdr_luminance_message_shown) {
         self->hdr_luminance_message_shown = true;
-        gsr_log(GSR_LOG_LEVEL_INFO, "gsr_capture_kms_update_hdr_color_transforms: the monitor is in sdr mode, converting the captured sdr image to hdr (BT.709 to BT.2020 with sdr white at %d nits)", (int)SDR_WHITE_LUMINANCE_REFERENCE);
+        gsr_log(GSR_LOG_LEVEL_INFO, "gsr_capture_kms_update_hdr_color_transforms: the captured image is sdr, converting it to hdr (BT.709 to BT.2020 with sdr white at %d nits)", (int)SDR_WHITE_LUMINANCE_REFERENCE);
     }
 
     const bool tone_map_hdr_to_sdr = !self->params.hdr && plane_is_hdr;
@@ -858,11 +872,11 @@ static void gsr_capture_kms_pre_capture(gsr_capture *cap, gsr_capture_metadata *
     if(!self->drm_fd)
         return;
 
-    if(self->params.kde_night_light || drm_plane_is_hdr(self->drm_fd))
+    if(self->params.kde_night_light || drm_connector_is_hdr(self->drm_fd))
         gsr_capture_kms_update_crtc_color_ops(self, color_conversion);
 
     if(self->params.hdr) {
-        if(drm_plane_is_hdr(self->drm_fd))
+        if(drm_connector_is_hdr(self->drm_fd))
             gsr_kms_set_hdr_metadata(self, self->drm_fd);
         else
             gsr_kms_set_sdr_in_hdr_metadata(self);

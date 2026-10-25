@@ -65,7 +65,7 @@ static void list_gpu_info(gsr_egl *egl) {
     printf("card_path|%s\n", egl->card_path);
 }
 
-static void list_supported_video_codecs(gsr_egl *egl, bool wayland) {
+static void list_supported_video_codecs(gsr_egl *egl) {
     // Dont clean it up on purpose to increase shutdown speed
     gsr_supported_video_codecs supported_video_codecs;
     get_supported_video_codecs(egl, GSR_VIDEO_CODEC_H264, false, false, &supported_video_codecs);
@@ -81,13 +81,13 @@ static void list_supported_video_codecs(gsr_egl *egl, bool wayland) {
         puts("h264_software");
     if(supported_video_codecs.hevc.supported)
         puts("hevc");
-    if(supported_video_codecs.hevc_hdr.supported && wayland)
+    if(supported_video_codecs.hevc_hdr.supported)
         puts("hevc_hdr");
     if(supported_video_codecs.hevc_10bit.supported)
         puts("hevc_10bit");
     if(supported_video_codecs.av1.supported)
         puts("av1");
-    if(supported_video_codecs.av1_hdr.supported && wayland)
+    if(supported_video_codecs.av1_hdr.supported)
         puts("av1_hdr");
     if(supported_video_codecs.av1_10bit.supported)
         puts("av1_10bit");
@@ -99,13 +99,13 @@ static void list_supported_video_codecs(gsr_egl *egl, bool wayland) {
        puts("h264_vulkan");
     if(supported_video_codecs_vulkan.hevc.supported)
        puts("hevc_vulkan");
-    if(supported_video_codecs_vulkan.hevc_hdr.supported && wayland)
+    if(supported_video_codecs_vulkan.hevc_hdr.supported)
         puts("hevc_hdr_vulkan");
     if(supported_video_codecs_vulkan.hevc_10bit.supported)
         puts("hevc_10bit_vulkan");
     if(supported_video_codecs_vulkan.av1.supported)
         puts("av1_vulkan");
-    if(supported_video_codecs_vulkan.av1_hdr.supported && wayland)
+    if(supported_video_codecs_vulkan.av1_hdr.supported)
         puts("av1_hdr_vulkan");
     if(supported_video_codecs_vulkan.av1_10bit.supported)
         puts("av1_10bit_vulkan");
@@ -263,7 +263,7 @@ int info_command(void *userdata) {
     puts("section=gpu_info");
     list_gpu_info(&windowing.egl);
     puts("section=video_codecs");
-    list_supported_video_codecs(&windowing.egl, wayland);
+    list_supported_video_codecs(&windowing.egl);
     puts("section=image_formats");
     puts("jpeg");
     puts("png");
