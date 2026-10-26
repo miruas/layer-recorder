@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <X11/Xlib.h>
+#include <X11/extensions/Xrandr.h>
 
 #define GSR_MAX_OUTPUTS 32
 
@@ -28,6 +29,7 @@ typedef struct {
     Window window;
     gsr_x11_output outputs[GSR_MAX_OUTPUTS];
     int num_outputs;
+    int randr_event;
     XEvent xev;
 } gsr_window_x11;
 
@@ -54,12 +56,7 @@ static void store_x11_monitor(const gsr_monitor *monitor, void *userdata) {
     ++window_x11->num_outputs;
 }
 
-static void gsr_window_x11_deinit(gsr_window_x11 *self) {
-    if(self->window) {
-        XDestroyWindow(self->display, self->window);
-        self->window = None;
-    }
-
+static void gsr_window_x11_clear_outputs(gsr_window_x11 *self) {
     for(int i = 0; i < self->num_outputs; ++i) {
         if(self->outputs[i].name) {
             free(self->outputs[i].name);
@@ -67,6 +64,14 @@ static void gsr_window_x11_deinit(gsr_window_x11 *self) {
         }
     }
     self->num_outputs = 0;
+}
+
+static void gsr_window_x11_deinit(gsr_window_x11 *self) {
+    if(self->window) {
+        XDestroyWindow(self->display, self->window);
+        self->window = None;
+    }
+    gsr_window_x11_clear_outputs(self);
 }
 
 static bool gsr_window_x11_init(gsr_window_x11 *self) {
@@ -78,6 +83,12 @@ static bool gsr_window_x11_init(gsr_window_x11 *self) {
 
     self->num_outputs = 0;
     for_each_active_monitor_output_x11_not_cached(self->display, store_x11_monitor, self);
+
+    int randr_error = 0;
+    if(XRRQueryExtension(self->display, &self->randr_event, &randr_error))
+        XRRSelectInput(self->display, DefaultRootWindow(self->display), RRScreenChangeNotifyMask | RRCrtcChangeNotifyMask | RROutputChangeNotifyMask);
+    else
+        self->randr_event = 0;
     return true;
 }
 
@@ -92,6 +103,10 @@ static bool gsr_window_x11_process_event(gsr_window *window) {
     gsr_window_x11 *self = window->priv;
     if(XPending(self->display)) {
         XNextEvent(self->display, &self->xev);
+        if(self->randr_event && (self->xev.type == self->randr_event + RRScreenChangeNotify || self->xev.type == self->randr_event + RRNotify)) {
+            gsr_window_x11_clear_outputs(self);
+            for_each_active_monitor_output_x11_not_cached(self->display, store_x11_monitor, self);
+        }
         return true;
     }
     return false;

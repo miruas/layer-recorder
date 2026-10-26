@@ -36,6 +36,7 @@ typedef struct {
 
     vec2i capture_pos;
     vec2i capture_size;
+    vec2i monitor_size;
     MonitorId monitor_id;
 
     gsr_monitor_rotation display_server_monitor_rotation;
@@ -206,6 +207,7 @@ static int gsr_capture_kms_start(gsr_capture *cap, gsr_capture_metadata *capture
         self->capture_size = monitor.size;
     else
         self->capture_size = rotate_capture_size_if_rotated(self, monitor.size, self->display_server_monitor_rotation);
+    self->monitor_size = self->capture_size;
 
     vec2i capture_size = self->capture_size;
     if(self->params.region_size.x > 0 && self->params.region_size.y > 0)
@@ -664,10 +666,14 @@ static gsr_kms_response_item* find_monitor_drm(gsr_capture_kms *self, bool *capt
             break;
     }
 
-    // Will never happen on wayland unless the target monitor has been disconnected
+    /* Will never happen on wayland unless the target monitor has been disconnected. A regular xorg server scans out all monitors
+       from one framebuffer, but an xorg server with a framebuffer per monitor doesn't and the largest plane is then another monitor */
     if(!drm_fd && self->is_x11) {
-        drm_fd = find_largest_drm(self->params.kms_response);
-        *capture_is_combined_plane = true;
+        gsr_kms_response_item *largest_drm = find_largest_drm(self->params.kms_response);
+        if(largest_drm && (int)largest_drm->width >= self->capture_pos.x + self->monitor_size.x && (int)largest_drm->height >= self->capture_pos.y + self->monitor_size.y) {
+            drm_fd = largest_drm;
+            *capture_is_combined_plane = true;
+        }
     }
 
     return drm_fd;
@@ -816,9 +822,6 @@ static void gsr_capture_kms_update_connector_ids(gsr_capture_kms *self) {
         return;
 
     self->last_time_monitor_check = now;
-    /* TODO: Assume for now that there is only 1 framebuffer for all monitors and it doesn't change */
-    if(self->is_x11)
-        return;
 
     self->crtc_connector_id = 0;
 
@@ -851,6 +854,7 @@ static void gsr_capture_kms_update_connector_ids(gsr_capture_kms *self) {
         self->capture_size = monitor.size;
     else
         self->capture_size = rotate_capture_size_if_rotated(self, monitor.size, self->display_server_monitor_rotation);
+    self->monitor_size = self->capture_size;
 }
 
 static void gsr_capture_kms_pre_capture(gsr_capture *cap, gsr_capture_metadata *capture_metadata, gsr_color_conversion *color_conversion) {
@@ -885,7 +889,10 @@ static void gsr_capture_kms_pre_capture(gsr_capture *cap, gsr_capture_metadata *
     const gsr_monitor_rotation plane_rotation = kms_rotation_to_gsr_monitor_rotation(self->drm_fd->rotation);
     self->final_monitor_rotation = self->capture_is_combined_plane ? GSR_MONITOR_ROT_0 : sub_rotations(self->display_server_monitor_rotation, plane_rotation);
 
-    self->capture_size = rotate_capture_size_if_rotated(self, (vec2i){ self->drm_fd->src_w, self->drm_fd->src_h }, self->final_monitor_rotation);
+    if(self->capture_is_combined_plane)
+        self->capture_size = self->monitor_size;
+    else
+        self->capture_size = rotate_capture_size_if_rotated(self, (vec2i){ self->drm_fd->src_w, self->drm_fd->src_h }, self->final_monitor_rotation);
     if(self->params.region_size.x > 0 && self->params.region_size.y > 0)
         self->capture_size = self->params.region_size;
 

@@ -95,7 +95,7 @@ static vec2i get_monitor_size_rotated(int width, int height, gsr_monitor_rotatio
 }
 
 void for_each_active_monitor_output_x11_not_cached(Display *display, active_monitor_callback callback, void *userdata) {
-    XRRScreenResources *screen_res = XRRGetScreenResources(display, DefaultRootWindow(display));
+    XRRScreenResources *screen_res = XRRGetScreenResourcesCurrent(display, DefaultRootWindow(display));
     if(!screen_res)
         return;
 
