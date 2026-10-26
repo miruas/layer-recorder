@@ -622,6 +622,13 @@ static int run(args_parser *arg_parser) {
         goto done;
     }
 
+    if(!gsr_windowing_is_wayland(&windowing) && video_codec_is_hdr(arg_parser->settings.video_codec) &&
+        !gsr_capture_sources_supports_hdr(&capture_sources, monitor_capture_use_drm(windowing.window, windowing.egl.gpu_info.vendor)))
+    {
+        gsr_log(GSR_LOG_LEVEL_WARNING, "hdr is only supported on x11 when capturing monitors with amd/intel gpus, the video will be recorded in sdr");
+        arg_parser->settings.video_codec = hdr_video_codec_to_sdr_video_codec(arg_parser->settings.video_codec);
+    }
+
     if(!windowing.card_path_found) {
         gsr_log(GSR_LOG_LEVEL_ERROR, "no /dev/dri/cardX device found. Make sure that you have at least one monitor connected or record a single window instead on X11 or record with the -w portal option");
         exit_code = 2;

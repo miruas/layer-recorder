@@ -365,6 +365,15 @@ bool gsr_capture_sources_has_type(const gsr_capture_sources *self, CaptureSource
     return false;
 }
 
+bool gsr_capture_sources_supports_hdr(const gsr_capture_sources *self, bool monitor_capture_uses_drm) {
+    for(size_t i = 0; i < self->num_items; ++i) {
+        const CaptureSourceType type = self->items[i].type;
+        if(!monitor_capture_uses_drm || (type != GSR_CAPTURE_SOURCE_TYPE_MONITOR && type != GSR_CAPTURE_SOURCE_TYPE_REGION))
+            return false;
+    }
+    return true;
+}
+
 bool gsr_capture_sources_has_damage_tracked_target(const gsr_capture_sources *self) {
     for(size_t i = 0; i < self->num_items; ++i) {
         if(self->items[i].type != GSR_CAPTURE_SOURCE_TYPE_V4L2)

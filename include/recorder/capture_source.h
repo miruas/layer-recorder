@@ -56,5 +56,7 @@ bool gsr_capture_sources_has_type(const gsr_capture_sources *self, CaptureSource
 bool gsr_capture_sources_has_damage_tracked_target(const gsr_capture_sources *self);
 bool gsr_capture_sources_has_region_set(const gsr_capture_sources *self);
 bool gsr_capture_sources_has_monitor_or_region(const gsr_capture_sources *self);
+/* Only monitors and regions captured with kms support hdr */
+bool gsr_capture_sources_supports_hdr(const gsr_capture_sources *self, bool monitor_capture_uses_drm);
 
 #endif /* GSR_RECORDER_CAPTURE_SOURCE_H */
