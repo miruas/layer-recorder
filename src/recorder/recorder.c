@@ -29,6 +29,7 @@
 #include <stdatomic.h>
 
 #include <libavutil/time.h>
+#include <libavutil/mastering_display_metadata.h>
 #include <libavformat/avformat.h>
 
 #include <X11/Xlib.h>
@@ -564,6 +565,46 @@ static void recorder_update_fps_counters(gsr_recorder *self) {
     }
 }
 
+static bool frame_side_data_equals(const AVFrame *frame, enum AVFrameSideDataType type, const void *data, size_t size) {
+    const AVFrameSideData *side_data = av_frame_get_side_data(frame, type);
+    return side_data && side_data->size >= size && memcmp(side_data->data, data, size) == 0;
+}
+
+static void recorder_update_frame_hdr_metadata(gsr_recorder *self) {
+    AVMasteringDisplayMetadata mastering_display_metadata;
+    AVContentLightMetadata light_metadata;
+    memset(&mastering_display_metadata, 0, sizeof(mastering_display_metadata));
+    memset(&light_metadata, 0, sizeof(light_metadata));
+
+    bool found = false;
+    for(size_t video_source_index = 0; video_source_index < self->video_sources->num_items && !found; ++video_source_index) {
+        found = gsr_capture_get_frame_hdr_metadata(self->video_sources->items[video_source_index].capture, &mastering_display_metadata, &light_metadata);
+    }
+
+    if(!found)
+        return;
+
+    if(frame_side_data_equals(self->video_frame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA, &mastering_display_metadata, sizeof(mastering_display_metadata)) &&
+        frame_side_data_equals(self->video_frame, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL, &light_metadata, sizeof(light_metadata)))
+    {
+        return;
+    }
+
+    av_frame_remove_side_data(self->video_frame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
+    av_frame_remove_side_data(self->video_frame, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);
+
+    AVMasteringDisplayMetadata *frame_mastering_display_metadata = av_mastering_display_metadata_create_side_data(self->video_frame);
+    if(frame_mastering_display_metadata)
+        *frame_mastering_display_metadata = mastering_display_metadata;
+
+    AVContentLightMetadata *frame_light_metadata = av_content_light_metadata_create_side_data(self->video_frame);
+    if(frame_light_metadata)
+        *frame_light_metadata = light_metadata;
+
+    /* Some encoders (such as vaapi) only write the hdr metadata of the frame on keyframes */
+    self->force_iframe_frame = true;
+}
+
 static void recorder_capture_and_encode_frame(gsr_recorder *self, bool damaged) {
     const double this_video_frame_time = gsr_recording_clock_get_time(self->recording_clock);
     const int64_t expected_frames = floor((this_video_frame_time - self->record_start_time) / self->target_fps);
@@ -633,6 +674,9 @@ static void recorder_capture_and_encode_frame(gsr_recorder *self, bool damaged) 
             if(self->hdr && !self->hdr_metadata_set && !self->settings.is_replaying && add_hdr_metadata_to_video_stream(video_source->capture, self->video_stream))
                 self->hdr_metadata_set = true;
         }
+
+        if(self->hdr)
+            recorder_update_frame_hdr_metadata(self);
 
         // TODO: Check if duplicate frame can be saved just by writing it with a different pts instead of sending it again
         const int num_frames_to_encode = self->settings.framerate_mode == GSR_FRAMERATE_MODE_CONSTANT ? num_missed_frames : 1;

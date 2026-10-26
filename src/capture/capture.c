@@ -41,9 +41,9 @@ bool gsr_capture_uses_external_image(gsr_capture *cap) {
         return false;
 }
 
-bool gsr_capture_set_hdr_metadata(gsr_capture *cap, AVMasteringDisplayMetadata *mastering_display_metadata, AVContentLightMetadata *light_metadata) {
-    if(cap->set_hdr_metadata)
-        return cap->set_hdr_metadata(cap, mastering_display_metadata, light_metadata);
+bool gsr_capture_get_frame_hdr_metadata(gsr_capture *cap, AVMasteringDisplayMetadata *mastering_display_metadata, AVContentLightMetadata *light_metadata) {
+    if(cap->get_frame_hdr_metadata)
+        return cap->get_frame_hdr_metadata(cap, mastering_display_metadata, light_metadata);
     else
         return false;
 }

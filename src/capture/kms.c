@@ -534,9 +534,6 @@ static void gsr_capture_kms_update_hdr_color_transforms(gsr_capture_kms *self, g
 }
 
 static void gsr_kms_set_sdr_in_hdr_metadata(gsr_capture_kms *self) {
-    if(self->hdr_metadata_set)
-        return;
-
     self->hdr_metadata_set = true;
     memset(&self->hdr_metadata, 0, sizeof(self->hdr_metadata));
     self->hdr_metadata.metadata_type = HDMI_STATIC_METADATA_TYPE1;
@@ -555,11 +552,7 @@ static void gsr_kms_set_sdr_in_hdr_metadata(gsr_capture_kms *self) {
     self->hdr_video_max_luminance = SDR_WHITE_LUMINANCE_REFERENCE;
 }
 
-// TODO: Check if this hdr data can be changed after the call to av_packet_side_data_add
 static void gsr_kms_set_hdr_metadata(gsr_capture_kms *self, const gsr_kms_response_item *drm_fd) {
-    if(self->hdr_metadata_set)
-        return;
-
     self->hdr_metadata_set = true;
     self->hdr_metadata = drm_fd->hdr_metadata;
 
@@ -880,7 +873,7 @@ static void gsr_capture_kms_pre_capture(gsr_capture *cap, gsr_capture_metadata *
         gsr_capture_kms_update_crtc_color_ops(self, color_conversion);
 
     if(self->params.hdr) {
-        if(drm_connector_is_hdr(self->drm_fd))
+        if(gsr_capture_kms_plane_is_hdr(self, self->drm_fd))
             gsr_kms_set_hdr_metadata(self, self->drm_fd);
         else
             gsr_kms_set_sdr_in_hdr_metadata(self);
@@ -1066,7 +1059,7 @@ static bool gsr_capture_kms_uses_external_image(gsr_capture *cap) {
     return true;
 }
 
-static bool gsr_capture_kms_set_hdr_metadata(gsr_capture *cap, AVMasteringDisplayMetadata *mastering_display_metadata, AVContentLightMetadata *light_metadata) {
+static bool gsr_capture_kms_get_frame_hdr_metadata(gsr_capture *cap, AVMasteringDisplayMetadata *mastering_display_metadata, AVContentLightMetadata *light_metadata) {
     gsr_capture_kms *self = cap->priv;
 
     if(!self->hdr_metadata_set)
@@ -1152,7 +1145,7 @@ gsr_capture* gsr_capture_kms_create(const gsr_capture_kms_params *params) {
         .pre_capture = gsr_capture_kms_pre_capture,
         .capture = gsr_capture_kms_capture,
         .uses_external_image = gsr_capture_kms_uses_external_image,
-        .set_hdr_metadata = gsr_capture_kms_set_hdr_metadata,
+        .get_frame_hdr_metadata = gsr_capture_kms_get_frame_hdr_metadata,
         //.is_damaged = gsr_capture_kms_is_damaged,
         //.clear_damage = gsr_capture_kms_clear_damage,
         .destroy = gsr_capture_kms_destroy,

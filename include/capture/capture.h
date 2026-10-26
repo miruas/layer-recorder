@@ -42,7 +42,7 @@ struct gsr_capture {
     void (*pre_capture)(gsr_capture *cap, gsr_capture_metadata *capture_metadata, gsr_color_conversion *color_conversion); /* can be NULL */
     int (*capture)(gsr_capture *cap, gsr_capture_metadata *capture_metadata, gsr_color_conversion *color_conversion); /* Return 0 if the frame was captured */
     bool (*uses_external_image)(gsr_capture *cap); /* can be NULL. If NULL, return false */
-    bool (*set_hdr_metadata)(gsr_capture *cap, AVMasteringDisplayMetadata *mastering_display_metadata, AVContentLightMetadata *light_metadata); /* can be NULL. If NULL, return false */
+    bool (*get_frame_hdr_metadata)(gsr_capture *cap, AVMasteringDisplayMetadata *mastering_display_metadata, AVContentLightMetadata *light_metadata); /* can be NULL. If NULL, return false. This is the hdr metadata of the content in the last captured frame */
     uint64_t (*get_window_id)(gsr_capture *cap); /* can be NULL. Returns 0 if unknown */
     bool (*is_damaged)(gsr_capture *cap); /* can be NULL */
     void (*clear_damage)(gsr_capture *cap); /* can be NULL */
@@ -58,7 +58,7 @@ void gsr_capture_tick(gsr_capture *cap);
 bool gsr_capture_should_stop(gsr_capture *cap, bool *err);
 int gsr_capture_capture(gsr_capture *cap, gsr_capture_metadata *capture_metadata, gsr_color_conversion *color_conversion);
 bool gsr_capture_uses_external_image(gsr_capture *cap);
-bool gsr_capture_set_hdr_metadata(gsr_capture *cap, AVMasteringDisplayMetadata *mastering_display_metadata, AVContentLightMetadata *light_metadata);
+bool gsr_capture_get_frame_hdr_metadata(gsr_capture *cap, AVMasteringDisplayMetadata *mastering_display_metadata, AVContentLightMetadata *light_metadata);
 void gsr_capture_destroy(gsr_capture *cap);
 
 #endif /* GSR_CAPTURE_CAPTURE_H */

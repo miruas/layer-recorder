@@ -53,7 +53,7 @@ bool add_hdr_metadata_to_video_stream(gsr_capture *cap, AVStream *video_stream) 
         return false;
     }
 
-    if(!gsr_capture_set_hdr_metadata(cap, mastering_display_metadata, light_metadata)) {
+    if(!gsr_capture_get_frame_hdr_metadata(cap, mastering_display_metadata, light_metadata)) {
         av_freep(&light_metadata);
         av_freep(&mastering_display_metadata);
         return false;
