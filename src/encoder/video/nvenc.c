@@ -50,6 +50,8 @@ static bool gsr_video_encoder_nvenc_setup_context(gsr_video_encoder_nvenc *self,
     hw_frame_context->width = video_codec_context->width;
     hw_frame_context->height = video_codec_context->height;
     hw_frame_context->sw_format = self->params.color_depth == GSR_COLOR_DEPTH_10_BITS ? AV_PIX_FMT_P010LE : AV_PIX_FMT_NV12;
+    if(self->params.rgb)
+        hw_frame_context->sw_format = AV_PIX_FMT_RGBA;
     hw_frame_context->format = video_codec_context->pix_fmt;
     hw_frame_context->device_ctx = (AVHWDeviceContext*)self->device_ctx->data;
 
@@ -95,9 +97,11 @@ static bool gsr_video_encoder_nvenc_setup_textures(gsr_video_encoder_nvenc *self
     const unsigned int formats[2] = { GL_RED, GL_RG };
     const int div[2] = {1, 2}; // divide UV texture size by 2 because chroma is half size
 
-    for(int i = 0; i < 2; ++i) {
+    for(int i = 0; i < (self->params.rgb ? 1 : 2); ++i) {
         self->target_texture_size[i] = (vec2i){ video_codec_context->width / div[i], video_codec_context->height / div[i] };
-        self->target_textures[i] = gl_create_texture(self->params.egl, self->target_texture_size[i].x, self->target_texture_size[i].y, self->params.color_depth == GSR_COLOR_DEPTH_8_BITS ? internal_formats_nv12[i] : internal_formats_p010[i], formats[i], GL_NEAREST);
+        const unsigned int internal_format = self->params.rgb ? GL_RGBA8 : (self->params.color_depth == GSR_COLOR_DEPTH_8_BITS ? internal_formats_nv12[i] : internal_formats_p010[i]);
+        const unsigned int format = self->params.rgb ? GL_RGBA : formats[i];
+        self->target_textures[i] = gl_create_texture(self->params.egl, self->target_texture_size[i].x, self->target_texture_size[i].y, internal_format, format, GL_NEAREST);
         if(self->target_textures[i] == 0) {
             gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_video_encoder_nvenc_setup_textures: failed to create opengl texture");
             return false;
@@ -115,6 +119,14 @@ static void gsr_video_encoder_nvenc_stop(gsr_video_encoder_nvenc *self, AVCodecC
 
 static bool gsr_video_encoder_nvenc_start(gsr_video_encoder *encoder, AVCodecContext *video_codec_context, AVFrame *frame) {
     gsr_video_encoder_nvenc *self = encoder->priv;
+
+    if(self->params.rgb) {
+        // NVENC converts packed RGB to limited-range BT.601.
+        video_codec_context->colorspace = AVCOL_SPC_BT470BG;
+        video_codec_context->color_range = AVCOL_RANGE_MPEG;
+        frame->colorspace = video_codec_context->colorspace;
+        frame->color_range = video_codec_context->color_range;
+    }
 
     if(!gsr_cuda_load(&self->cuda, self->params.egl->card_path)) {
         gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_video_encoder_nvenc_start: failed to load cuda");
@@ -173,7 +185,7 @@ void gsr_video_encoder_nvenc_stop(gsr_video_encoder_nvenc *self, AVCodecContext 
 static void gsr_video_encoder_nvenc_copy_textures_to_frame(gsr_video_encoder *encoder, AVFrame *frame, gsr_color_conversion *color_conversion) {
     gsr_video_encoder_nvenc *self = encoder->priv;
     const int div[2] = {1, 2}; // divide UV texture size by 2 because chroma is half size
-    for(int i = 0; i < 2; ++i) {
+    for(int i = 0; i < (self->params.rgb ? 1 : 2); ++i) {
         CUDA_MEMCPY2D memcpy_struct;
         memcpy_struct.srcXInBytes = 0;
         memcpy_struct.srcY = 0;
@@ -187,7 +199,7 @@ static void gsr_video_encoder_nvenc_copy_textures_to_frame(gsr_video_encoder *en
         memcpy_struct.srcPitch = frame->width / div[i];
         memcpy_struct.dstDevice = (CUdeviceptr)frame->data[i];
         memcpy_struct.dstPitch = frame->linesize[i];
-        memcpy_struct.WidthInBytes = frame->width * (self->params.color_depth == GSR_COLOR_DEPTH_10_BITS ? 2 : 1);
+        memcpy_struct.WidthInBytes = frame->width * (self->params.rgb ? 4 : (self->params.color_depth == GSR_COLOR_DEPTH_10_BITS ? 2 : 1));
         memcpy_struct.Height = frame->height / div[i];
         // TODO: Remove this copy if possible
         self->cuda.cuMemcpy2DAsync_v2(&memcpy_struct, self->cuda_stream);
@@ -205,6 +217,10 @@ static void gsr_video_encoder_nvenc_get_textures(gsr_video_encoder *encoder, uns
     texture_sizes[1] = self->target_texture_size[1];
     *num_textures = 2;
     *destination_color = self->params.color_depth == GSR_COLOR_DEPTH_10_BITS ? GSR_DESTINATION_COLOR_P010 : GSR_DESTINATION_COLOR_NV12;
+    if(self->params.rgb) {
+        *num_textures = 1;
+        *destination_color = GSR_DESTINATION_COLOR_RGB;
+    }
 }
 
 static void gsr_video_encoder_nvenc_destroy(gsr_video_encoder *encoder, AVCodecContext *video_codec_context) {

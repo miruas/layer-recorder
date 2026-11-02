@@ -46,9 +46,19 @@ gsr_video_encoder* create_video_encoder(gsr_egl *egl, const gsr_recorder_setting
             break;
         }
         case GSR_GPU_VENDOR_NVIDIA: {
+            AVDictionary *options = NULL;
+            if(settings->ffmpeg_video_opts)
+                av_dict_parse_string(&options, settings->ffmpeg_video_opts, "=", ";", 0);
+            const AVDictionaryEntry *rgb_mode = av_dict_get(options, "rgb_mode", NULL, 0);
             gsr_video_encoder_nvenc_params params;
             params.egl = egl;
             params.color_depth = color_depth;
+            params.rgb = rgb_mode && (strcmp(rgb_mode->value, "yuv444") == 0 || strcmp(rgb_mode->value, "2") == 0);
+            av_dict_free(&options);
+            if(params.rgb && color_depth != GSR_COLOR_DEPTH_8_BITS) {
+                gsr_log(GSR_LOG_LEVEL_ERROR, "RGB NVENC input requires an 8-bit video codec");
+                return NULL;
+            }
             video_encoder = gsr_video_encoder_nvenc_create(&params);
             break;
         }
