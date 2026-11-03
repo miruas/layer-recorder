@@ -146,6 +146,9 @@ typedef void(*__GLXextFuncPtr)(void);
 #define GL_ALL_BARRIER_BITS                     0xFFFFFFFF
 #define GL_PIXEL_UNPACK_BUFFER                  0x88EC
 #define GL_MAP_WRITE_BIT                        0x0002
+#define GL_SYNC_GPU_COMMANDS_COMPLETE           0x9117
+#define GL_ALREADY_SIGNALED                     0x911A
+#define GL_CONDITION_SATISFIED                  0x911C
 
 #define GL_VENDOR                               0x1F00
 #define GL_RENDERER                             0x1F01
@@ -337,6 +340,9 @@ struct gsr_egl {
     void (*glCreateBuffers)(int n, unsigned int *buffers);
     void (*glReadPixels)(int x, int y, int width, int height, unsigned int format, unsigned int type, void *pixels);
     void (*glReadBuffer)(unsigned int src);
+    void* (*glFenceSync)(unsigned int condition, unsigned int flags);
+    unsigned int (*glClientWaitSync)(void *sync, unsigned int flags, uint64_t timeout);
+    void (*glDeleteSync)(void *sync);
     void* (*glMapBufferRange)(unsigned int target, intptr_t offset, ssize_t length, unsigned int access);
     unsigned char (*glUnmapBuffer)(unsigned int target);
     void (*glGetIntegerv)(unsigned int pname, int *params);

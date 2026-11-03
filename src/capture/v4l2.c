@@ -24,7 +24,7 @@
 #define TJPF_RGBA 7
 #define TJFLAG_FASTDCT  2048
 
-#define NUM_BUFFERS 2
+#define NUM_BUFFERS 4
 #define NUM_PBOS 2
 
 typedef void* tjhandle;
@@ -60,6 +60,8 @@ typedef struct {
     int dmabuf_fd[NUM_BUFFERS];
     EGLImage dma_image[NUM_BUFFERS];
     unsigned int texture_id[NUM_BUFFERS];
+    bool buffer_held[NUM_BUFFERS];
+    void *buffer_draw_fence[NUM_BUFFERS];
     unsigned int prev_texture_index;
     bool got_first_frame;
 
@@ -94,6 +96,14 @@ static int xioctl(int fd, unsigned long request, void *arg) {
 }
 
 static void gsr_capture_v4l2_stop(gsr_capture_v4l2 *self) {
+    for(int i = 0; i < NUM_BUFFERS; ++i) {
+        if(self->buffer_draw_fence[i]) {
+            self->params.egl->glDeleteSync(self->buffer_draw_fence[i]);
+            self->buffer_draw_fence[i] = NULL;
+        }
+        self->buffer_held[i] = false;
+    }
+
     self->params.egl->glDeleteBuffers(NUM_PBOS, self->pbos);
     for(int i = 0; i < NUM_PBOS; ++i) {
         self->pbos[i] = 0;
@@ -702,8 +712,39 @@ static int gsr_capture_v4l2_start(gsr_capture *cap, gsr_capture_metadata *captur
     return 0;
 }
 
+static void gsr_capture_v4l2_queue_buffer(gsr_capture_v4l2 *self, unsigned int buffer_index) {
+    struct v4l2_buffer buf = {
+        .type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+        .memory = V4L2_MEMORY_MMAP,
+        .index = buffer_index
+    };
+    xioctl(self->fd, VIDIOC_QBUF, &buf);
+}
+
+static void gsr_capture_v4l2_queue_drawn_buffers(gsr_capture_v4l2 *self, unsigned int buffer_index_to_keep) {
+    for(unsigned int i = 0; i < NUM_BUFFERS; ++i) {
+        if(!self->buffer_held[i] || i == buffer_index_to_keep)
+            continue;
+
+        if(self->buffer_draw_fence[i]) {
+            const unsigned int status = self->params.egl->glClientWaitSync(self->buffer_draw_fence[i], 0, 0);
+            if(status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED)
+                continue;
+
+            self->params.egl->glDeleteSync(self->buffer_draw_fence[i]);
+            self->buffer_draw_fence[i] = NULL;
+        }
+
+        self->buffer_held[i] = false;
+        gsr_capture_v4l2_queue_buffer(self, i);
+    }
+}
+
 static void gsr_capture_v4l2_tick(gsr_capture *cap) {
     gsr_capture_v4l2 *self = cap->priv;
+    if(self->buffer_type == V4L2_BUFFER_TYPE_DMABUF)
+        gsr_capture_v4l2_queue_drawn_buffers(self, self->prev_texture_index);
+
     if(!self->got_first_frame && !self->should_stop) {
         const double timeout_sec = 5.0;
         if(clock_get_monotonic_seconds() - self->capture_start_time >= timeout_sec) {
@@ -759,10 +800,10 @@ static int gsr_capture_v4l2_capture(gsr_capture *cap, gsr_capture_metadata *capt
         .memory = V4L2_MEMORY_MMAP
     };
 
-    xioctl(self->fd, VIDIOC_DQBUF, &buf);
+    const bool dequeued = xioctl(self->fd, VIDIOC_DQBUF, &buf) == 0;
     unsigned int texture_index = buf.index;
 
-    if(buf.bytesused > 0 && !(buf.flags & V4L2_BUF_FLAG_ERROR)) {
+    if(dequeued && buf.bytesused > 0 && !(buf.flags & V4L2_BUF_FLAG_ERROR)) {
         if(!self->got_first_frame)
             gsr_log(GSR_LOG_LEVEL_INFO, "gsr_capture_v4l2_capture: camera %s is now ready", self->params.device_path);
         self->got_first_frame = true;
@@ -786,7 +827,16 @@ static int gsr_capture_v4l2_capture(gsr_capture *cap, gsr_capture_metadata *capt
     } else {
         texture_index = self->prev_texture_index;
     }
-    xioctl(self->fd, VIDIOC_QBUF, &buf);
+
+    if(dequeued) {
+        if(self->buffer_type == V4L2_BUFFER_TYPE_DMABUF && texture_index == buf.index)
+            self->buffer_held[buf.index] = true;
+        else
+            gsr_capture_v4l2_queue_buffer(self, buf.index);
+    }
+
+    if(self->buffer_type == V4L2_BUFFER_TYPE_DMABUF)
+        gsr_capture_v4l2_queue_drawn_buffers(self, texture_index);
 
     const vec2i output_size = scale_keep_aspect_ratio(self->capture_size, capture_metadata->recording_size);
     const vec2i target_pos = gsr_capture_get_target_position(output_size, capture_metadata);
@@ -794,15 +844,18 @@ static int gsr_capture_v4l2_capture(gsr_capture *cap, gsr_capture_metadata *capt
     self->params.egl->glFlush();
     // TODO: Use the minimal barrier required
     self->params.egl->glMemoryBarrier(GL_ALL_BARRIER_BITS);
-    // TODO: Remove this?
-    if(self->params.egl->gpu_info.vendor == GSR_GPU_VENDOR_NVIDIA)
-        self->params.egl->glFinish();
 
     if(self->buffer_type == V4L2_BUFFER_TYPE_DMABUF) {
         gsr_color_conversion_draw(color_conversion, self->texture_id[texture_index],
             target_pos, output_size,
             (vec2i){0, 0}, self->capture_size, self->capture_size,
             GSR_ROT_0, capture_metadata->flip, self->yuyv_conversion_fallback ? GSR_SOURCE_COLOR_YUYV : GSR_SOURCE_COLOR_RGB, true);
+
+        if(self->buffer_held[texture_index]) {
+            if(self->buffer_draw_fence[texture_index])
+                self->params.egl->glDeleteSync(self->buffer_draw_fence[texture_index]);
+            self->buffer_draw_fence[texture_index] = self->params.egl->glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        }
     } else {
         gsr_color_conversion_draw(color_conversion, self->texture_id[texture_index],
             target_pos, output_size,
