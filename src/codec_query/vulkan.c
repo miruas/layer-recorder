@@ -150,6 +150,81 @@ static void set_av1_max_resolution(PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR v
 #endif
 }
 
+static bool video_encode_profile_supports_yuv444(PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR vkGetPhysicalDeviceVideoCapabilitiesKHR, VkPhysicalDevice physical_device,
+    VkVideoCodecOperationFlagBitsKHR codec_operation, const void *codec_profile, void *codec_capabilities, VkVideoComponentBitDepthFlagBitsKHR bit_depth)
+{
+    const VkVideoProfileInfoKHR video_profile = {
+        .sType = VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR,
+        .pNext = codec_profile,
+        .videoCodecOperation = codec_operation,
+        .chromaSubsampling = VK_VIDEO_CHROMA_SUBSAMPLING_444_BIT_KHR,
+        .lumaBitDepth = bit_depth,
+        .chromaBitDepth = bit_depth
+    };
+
+    VkVideoEncodeCapabilitiesKHR encode_caps = {
+        .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_CAPABILITIES_KHR,
+        .pNext = codec_capabilities
+    };
+
+    VkVideoCapabilitiesKHR video_caps = {
+        .sType = VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR,
+        .pNext = &encode_caps
+    };
+
+    return vkGetPhysicalDeviceVideoCapabilitiesKHR(physical_device, &video_profile, &video_caps) == VK_SUCCESS;
+}
+
+static void set_hevc_yuv444_support(PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR vkGetPhysicalDeviceVideoCapabilitiesKHR, VkPhysicalDevice physical_device, gsr_supported_video_codecs *video_codecs) {
+#ifdef VK_KHR_video_encode_h265
+    const VkVideoEncodeH265ProfileInfoKHR hevc_profile = {
+        .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_PROFILE_INFO_KHR,
+        .stdProfileIdc = STD_VIDEO_H265_PROFILE_IDC_FORMAT_RANGE_EXTENSIONS
+    };
+
+    VkVideoEncodeH265CapabilitiesKHR hevc_caps = {
+        .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_CAPABILITIES_KHR
+    };
+
+    video_codecs->hevc.yuv444.supported = video_codecs->hevc.supported && video_encode_profile_supports_yuv444(vkGetPhysicalDeviceVideoCapabilitiesKHR, physical_device,
+        VK_VIDEO_CODEC_OPERATION_ENCODE_H265_BIT_KHR, &hevc_profile, &hevc_caps, VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR);
+
+    const bool yuv444_10bit = video_encode_profile_supports_yuv444(vkGetPhysicalDeviceVideoCapabilitiesKHR, physical_device,
+        VK_VIDEO_CODEC_OPERATION_ENCODE_H265_BIT_KHR, &hevc_profile, &hevc_caps, VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR);
+    video_codecs->hevc_10bit.yuv444.supported = video_codecs->hevc_10bit.supported && yuv444_10bit;
+    video_codecs->hevc_hdr.yuv444.supported = video_codecs->hevc_hdr.supported && yuv444_10bit;
+#else
+    (void)vkGetPhysicalDeviceVideoCapabilitiesKHR;
+    (void)physical_device;
+    (void)video_codecs;
+#endif
+}
+
+static void set_av1_yuv444_support(PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR vkGetPhysicalDeviceVideoCapabilitiesKHR, VkPhysicalDevice physical_device, gsr_supported_video_codecs *video_codecs) {
+#ifdef VK_KHR_video_encode_av1
+    const VkVideoEncodeAV1ProfileInfoKHR av1_profile = {
+        .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_PROFILE_INFO_KHR,
+        .stdProfile = STD_VIDEO_AV1_PROFILE_HIGH
+    };
+
+    VkVideoEncodeAV1CapabilitiesKHR av1_caps = {
+        .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_CAPABILITIES_KHR
+    };
+
+    video_codecs->av1.yuv444.supported = video_codecs->av1.supported && video_encode_profile_supports_yuv444(vkGetPhysicalDeviceVideoCapabilitiesKHR, physical_device,
+        VK_VIDEO_CODEC_OPERATION_ENCODE_AV1_BIT_KHR, &av1_profile, &av1_caps, VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR);
+
+    const bool yuv444_10bit = video_encode_profile_supports_yuv444(vkGetPhysicalDeviceVideoCapabilitiesKHR, physical_device,
+        VK_VIDEO_CODEC_OPERATION_ENCODE_AV1_BIT_KHR, &av1_profile, &av1_caps, VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR);
+    video_codecs->av1_10bit.yuv444.supported = video_codecs->av1_10bit.supported && yuv444_10bit;
+    video_codecs->av1_hdr.yuv444.supported = video_codecs->av1_hdr.supported && yuv444_10bit;
+#else
+    (void)vkGetPhysicalDeviceVideoCapabilitiesKHR;
+    (void)physical_device;
+    (void)video_codecs;
+#endif
+}
+
 bool gsr_get_supported_video_codecs_vulkan(gsr_supported_video_codecs *video_codecs, const char *card_path, int *device_index_ret, bool cleanup) {
     memset(video_codecs, 0, sizeof(*video_codecs));
     *device_index_ret = 0;
@@ -319,6 +394,10 @@ bool gsr_get_supported_video_codecs_vulkan(gsr_supported_video_codecs *video_cod
     set_h264_max_resolution(vkGetPhysicalDeviceVideoCapabilitiesKHR, physical_device, video_codecs);
     set_hevc_max_resolution(vkGetPhysicalDeviceVideoCapabilitiesKHR, physical_device, video_codecs);
     set_av1_max_resolution(vkGetPhysicalDeviceVideoCapabilitiesKHR, physical_device, video_codecs);
+
+    /* FFmpeg's h264 vulkan encoder only supports yuv420 (ff_hw_base_encode_init_params_h264) */
+    set_hevc_yuv444_support(vkGetPhysicalDeviceVideoCapabilitiesKHR, physical_device, video_codecs);
+    set_av1_yuv444_support(vkGetPhysicalDeviceVideoCapabilitiesKHR, physical_device, video_codecs);
 
     success = true;
 

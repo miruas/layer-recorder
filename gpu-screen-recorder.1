@@ -309,13 +309,13 @@ Using vulkan codecs may result in better gaming performance with older NVIDIA gp
 .br
 where the GPU gets downclocked when using nvenc (regular video codecs on NVIDIA).
 
-(default: auto → h264).
+(default: auto -> h264).
 .TP
 .BI \-q " quality"
 Quality preset (medium, high, very_high, ultra) for QP/VBR mode, or bitrate (kbps) for CBR mode (default: very_high).
 .TP
 .BI \-bm " auto|qp|vbr|cbr"
-Bitrate mode (default: auto → qp). CBR recommended for replay buffer and live streaming.
+Bitrate mode (default: auto -> qp). CBR recommended for replay buffer and live streaming.
 
 QP means to capture with constant quality, even in motion, while VBR and CBR means to capture with constant size.
 .TP
@@ -335,6 +335,18 @@ Try recording to a mkv file instead in that case in variable framerate mode (-fm
 .TP
 .BI \-cr " limited|full"
 Color range (default: limited). Full range may cause issues with some video players/websites.
+.TP
+.BI \-pixfmt " yuv420|yuv444"
+Pixel format (default: yuv420). yuv444 keeps the full color resolution, which makes colored text and thin colored lines sharper,
+.br
+but it increases the file size and is not supported by all video players, websites and hardware video decoders.
+.br
+yuv444 is only supported by some video codecs and GPUs, for example h264 and hevc on NVIDIA, hevc on Intel and h264 with
+.BR "-encoder cpu" .
+.br
+Run
+.B --info
+to see which video codecs support yuv444 on your system, they are listed in the video_yuv444 section.
 .TP
 .BI \-tune " performance|quality"
 Encoding tune (default: performance). Currently NVIDIA only.
@@ -457,7 +469,7 @@ Show help message.
 Show version (5.10.2).
 .TP
 .B \-\-info
-Show system info (codecs, capture options).
+Show system info (codecs, codecs that support yuv444, capture options).
 
 Note that this command can be slow on some systems. It's recommended in applications that you use it once to list supported video codecs
 .br

@@ -8,6 +8,7 @@ typedef struct gsr_egl gsr_egl;
 typedef struct {
     gsr_egl *egl;
     gsr_color_depth color_depth;
+    bool yuv444;
 } gsr_video_encoder_software_params;
 
 gsr_video_encoder* gsr_video_encoder_software_create(const gsr_video_encoder_software_params *params);

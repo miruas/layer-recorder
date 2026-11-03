@@ -20,7 +20,7 @@ void set_supported_video_codecs_ffmpeg(gsr_supported_video_codecs *supported_vid
 vec2i codec_get_max_resolution(gsr_video_codec video_codec, bool use_software_video_encoder, const gsr_supported_video_codecs *supported_video_codecs);
 bool codec_supports_resolution(vec2i codec_max_resolution, vec2i capture_resolution);
 /* Returns -1 if none is available */
-gsr_video_codec select_appropriate_video_codec_automatically(vec2i video_size, const gsr_supported_video_codecs *supported_video_codecs);
+gsr_video_codec select_appropriate_video_codec_automatically(vec2i video_size, bool yuv444, const gsr_supported_video_codecs *supported_video_codecs);
 void force_cpu_encoding(gsr_recorder_settings *settings);
 
 gsr_audio_codec select_audio_codec_with_fallback(gsr_audio_codec audio_codec, const char *file_extension, bool uses_amix, bool audio_codec_specified);

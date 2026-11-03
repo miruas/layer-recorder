@@ -129,6 +129,7 @@ typedef void(*__GLXextFuncPtr)(void);
 #define GL_LINEAR                               0x2601
 #define GL_FRAMEBUFFER                          0x8D40
 #define GL_COLOR_ATTACHMENT0                    0x8CE0
+#define GL_COLOR_ATTACHMENT1                    0x8CE1
 #define GL_FRAMEBUFFER_COMPLETE                 0x8CD5
 #define GL_DYNAMIC_DRAW                         0x88E8
 #define GL_ARRAY_BUFFER                         0x8892
@@ -333,6 +334,7 @@ struct gsr_egl {
     void (*glScissor)(int x, int y, int width, int height);
     void (*glCreateBuffers)(int n, unsigned int *buffers);
     void (*glReadPixels)(int x, int y, int width, int height, unsigned int format, unsigned int type, void *pixels);
+    void (*glReadBuffer)(unsigned int src);
     void* (*glMapBufferRange)(unsigned int target, intptr_t offset, ssize_t length, unsigned int access);
     unsigned char (*glUnmapBuffer)(unsigned int target);
     void (*glGetIntegerv)(unsigned int pname, int *params);

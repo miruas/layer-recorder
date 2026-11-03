@@ -8,6 +8,7 @@
 
 #define GSR_COLOR_CONVERSION_MAX_GRAPHICS_SHADERS 18
 #define GSR_COLOR_CONVERSION_MAX_FRAMEBUFFERS 2
+#define GSR_COLOR_CONVERSION_MAX_DESTINATION_TEXTURES 3
 
 typedef enum {
     GSR_COLOR_MATRIX_TRANSFER_PQ           = 1,
@@ -22,8 +23,14 @@ typedef enum {
 } gsr_source_color;
 
 typedef enum {
-    GSR_DESTINATION_COLOR_NV12, /* YUV420, 8-bit */
-    GSR_DESTINATION_COLOR_P010, /* YUV420, 10-bit */
+    GSR_DESTINATION_COLOR_NV12,      /* YUV420, 8-bit */
+    GSR_DESTINATION_COLOR_P010,      /* YUV420, 10-bit */
+    GSR_DESTINATION_COLOR_NV24,      /* YUV444 semi-planar, 8-bit */
+    GSR_DESTINATION_COLOR_P410,      /* YUV444 semi-planar, 10-bit */
+    GSR_DESTINATION_COLOR_YUV444P,   /* YUV444 planar, 8-bit */
+    GSR_DESTINATION_COLOR_YUV444P16, /* YUV444 planar, 10-bit */
+    GSR_DESTINATION_COLOR_VUYX,      /* YUV444 packed, 8-bit */
+    GSR_DESTINATION_COLOR_XV30,      /* YUV444 packed, 10-bit */
     GSR_DESTINATION_COLOR_RGB
 } gsr_destination_color;
 
@@ -60,8 +67,8 @@ typedef struct {
 
     gsr_destination_color destination_color;
 
-    unsigned int destination_textures[2];
-    vec2i destination_textures_size[2];
+    unsigned int destination_textures[GSR_COLOR_CONVERSION_MAX_DESTINATION_TEXTURES];
+    vec2i destination_textures_size[GSR_COLOR_CONVERSION_MAX_DESTINATION_TEXTURES];
     int num_destination_textures;
 
     gsr_color_range color_range;

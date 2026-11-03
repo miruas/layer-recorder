@@ -7,7 +7,13 @@
 typedef struct {
     bool supported;
     bool low_power;
+} gsr_supported_video_codec_yuv444;
+
+typedef struct {
+    bool supported;
+    bool low_power;
     vec2i max_resolution;
+    gsr_supported_video_codec_yuv444 yuv444;
 } gsr_supported_video_codec;
 
 typedef struct {

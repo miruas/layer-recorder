@@ -114,6 +114,20 @@ static bool gsr_vk_funcs_load(gsr_vk_funcs *vk, PFN_vkGetInstanceProcAddr get_in
     return true;
 }
 
+static enum AVPixelFormat gsr_video_encoder_vulkan_get_sw_format(const gsr_video_encoder_vulkan_params *params) {
+    const bool ten_bit = params->color_depth == GSR_COLOR_DEPTH_10_BITS;
+    if(params->yuv444)
+        return ten_bit ? AV_PIX_FMT_P410LE : AV_PIX_FMT_NV24;
+    return ten_bit ? AV_PIX_FMT_P010LE : AV_PIX_FMT_NV12;
+}
+
+static gsr_destination_color gsr_video_encoder_vulkan_get_destination_color(const gsr_video_encoder_vulkan_params *params) {
+    const bool ten_bit = params->color_depth == GSR_COLOR_DEPTH_10_BITS;
+    if(params->yuv444)
+        return ten_bit ? GSR_DESTINATION_COLOR_P410 : GSR_DESTINATION_COLOR_NV24;
+    return ten_bit ? GSR_DESTINATION_COLOR_P010 : GSR_DESTINATION_COLOR_NV12;
+}
+
 static bool gsr_video_encoder_vulkan_setup_context(gsr_video_encoder_vulkan *self, AVCodecContext *video_codec_context) {
     AVDictionary *options = NULL;
 
@@ -135,7 +149,7 @@ static bool gsr_video_encoder_vulkan_setup_context(gsr_video_encoder_vulkan *sel
     AVHWFramesContext *hw_frame_context = (AVHWFramesContext*)frame_context->data;
     hw_frame_context->width = video_codec_context->width;
     hw_frame_context->height = video_codec_context->height;
-    hw_frame_context->sw_format = self->params.color_depth == GSR_COLOR_DEPTH_10_BITS ? AV_PIX_FMT_P010LE : AV_PIX_FMT_NV12;
+    hw_frame_context->sw_format = gsr_video_encoder_vulkan_get_sw_format(&self->params);
     hw_frame_context->format = video_codec_context->pix_fmt;
     hw_frame_context->device_ctx = (AVHWDeviceContext*)self->device_ctx->data;
 
@@ -319,14 +333,18 @@ static bool gsr_video_encoder_vulkan_setup_textures(gsr_video_encoder_vulkan *se
     const VkFormat fmt_uv = is_p010 ? VK_FORMAT_R16G16_UNORM : VK_FORMAT_R8G8_UNORM;
     const unsigned int gl_fmt_y  = is_p010 ? GL_R16  : GL_R8;
     const unsigned int gl_fmt_uv = is_p010 ? GL_RG16 : GL_RG8;
+    const int chroma_divisor = self->params.yuv444 ? 1 : 2;
+
+    self->texture_sizes[0] = (vec2i){ frame->width, frame->height };
+    self->texture_sizes[1] = (vec2i){ frame->width / chroma_divisor, frame->height / chroma_divisor };
 
     if(!create_exportable_image(&self->vk, vv->act_dev, vv->phys_dev,
-                                frame->width, frame->height, fmt_y,
+                                self->texture_sizes[0].x, self->texture_sizes[0].y, fmt_y,
                                 &self->export_images[0], &self->export_memory[0], &self->export_memory_size[0]))
         return false;
 
     if(!create_exportable_image(&self->vk, vv->act_dev, vv->phys_dev,
-                                frame->width / 2, frame->height / 2, fmt_uv,
+                                self->texture_sizes[1].x, self->texture_sizes[1].y, fmt_uv,
                                 &self->export_images[1], &self->export_memory[1], &self->export_memory_size[1]))
         return false;
 
@@ -361,19 +379,16 @@ static bool gsr_video_encoder_vulkan_setup_textures(gsr_video_encoder_vulkan *se
     self->params.egl->glBindTexture(GL_TEXTURE_2D, self->target_textures[0]);
     self->params.egl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_TILING_EXT, GL_OPTIMAL_TILING_EXT);
     self->params.egl->glTexStorageMem2DEXT(GL_TEXTURE_2D, 1, gl_fmt_y,
-                                           frame->width, frame->height,
+                                           self->texture_sizes[0].x, self->texture_sizes[0].y,
                                            self->gl_memory_objects[0], 0);
     self->params.egl->glBindTexture(GL_TEXTURE_2D, 0);
 
     self->params.egl->glBindTexture(GL_TEXTURE_2D, self->target_textures[1]);
     self->params.egl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_TILING_EXT, GL_OPTIMAL_TILING_EXT);
     self->params.egl->glTexStorageMem2DEXT(GL_TEXTURE_2D, 1, gl_fmt_uv,
-                                           frame->width / 2, frame->height / 2,
+                                           self->texture_sizes[1].x, self->texture_sizes[1].y,
                                            self->gl_memory_objects[1], 0);
     self->params.egl->glBindTexture(GL_TEXTURE_2D, 0);
-
-    self->texture_sizes[0] = (vec2i){ frame->width,     frame->height     };
-    self->texture_sizes[1] = (vec2i){ frame->width / 2, frame->height / 2 };
 
     /* Set up Vulkan command infrastructure */
     VkCommandPoolCreateInfo pool_info = {
@@ -622,7 +637,7 @@ static void gsr_video_encoder_vulkan_copy_textures_to_frame(gsr_video_encoder *e
         VkImageCopy copy_y = {
             .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
             .dstSubresource = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 0, 1 },
-            .extent = { (uint32_t)frame->width, (uint32_t)frame->height, 1 },
+            .extent = { (uint32_t)self->texture_sizes[0].x, (uint32_t)self->texture_sizes[0].y, 1 },
         };
         self->vk.vkCmdCopyImage(self->command_buffer,
             self->export_images[0], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -633,7 +648,7 @@ static void gsr_video_encoder_vulkan_copy_textures_to_frame(gsr_video_encoder *e
         VkImageCopy copy_uv = {
             .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
             .dstSubresource = { VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 0, 1 },
-            .extent = { (uint32_t)frame->width / 2, (uint32_t)frame->height / 2, 1 },
+            .extent = { (uint32_t)self->texture_sizes[1].x, (uint32_t)self->texture_sizes[1].y, 1 },
         };
         self->vk.vkCmdCopyImage(self->command_buffer,
             self->export_images[1], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -704,11 +719,7 @@ static void gsr_video_encoder_vulkan_copy_textures_to_frame(gsr_video_encoder *e
             VkImageCopy copy = {
                 .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
                 .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
-                .extent = {
-                    (uint32_t)(i == 0 ? frame->width     : frame->width / 2),
-                    (uint32_t)(i == 0 ? frame->height    : frame->height / 2),
-                    1
-                },
+                .extent = { (uint32_t)self->texture_sizes[i].x, (uint32_t)self->texture_sizes[i].y, 1 },
             };
             self->vk.vkCmdCopyImage(self->command_buffer,
                 self->export_images[i], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -875,7 +886,7 @@ static void gsr_video_encoder_vulkan_get_textures(gsr_video_encoder *encoder, un
     texture_sizes[0] = self->texture_sizes[0];
     texture_sizes[1] = self->texture_sizes[1];
     *num_textures = 2;
-    *destination_color = self->params.color_depth == GSR_COLOR_DEPTH_10_BITS ? GSR_DESTINATION_COLOR_P010 : GSR_DESTINATION_COLOR_NV12;
+    *destination_color = gsr_video_encoder_vulkan_get_destination_color(&self->params);
 }
 
 static void gsr_video_encoder_vulkan_destroy(gsr_video_encoder *encoder, AVCodecContext *video_codec_context) {

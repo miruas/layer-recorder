@@ -65,6 +65,19 @@ static void list_gpu_info(gsr_egl *egl) {
     printf("card_path|%s\n", egl->card_path);
 }
 
+typedef struct {
+    const char *name;
+    const gsr_supported_video_codec *supported_video_codec;
+} gsr_named_video_codec;
+
+static void list_video_codecs(const gsr_named_video_codec *video_codecs, int num_video_codecs, bool only_yuv444) {
+    for(int i = 0; i < num_video_codecs; ++i) {
+        const gsr_supported_video_codec *supported_video_codec = video_codecs[i].supported_video_codec;
+        if(supported_video_codec->supported && (!only_yuv444 || supported_video_codec->yuv444.supported))
+            puts(video_codecs[i].name);
+    }
+}
+
 static void list_supported_video_codecs(gsr_egl *egl) {
     // Dont clean it up on purpose to increase shutdown speed
     gsr_supported_video_codecs supported_video_codecs;
@@ -73,42 +86,36 @@ static void list_supported_video_codecs(gsr_egl *egl) {
     gsr_supported_video_codecs supported_video_codecs_vulkan;
     get_supported_video_codecs(egl, GSR_VIDEO_CODEC_H264_VULKAN, false, false, &supported_video_codecs_vulkan);
 
+    gsr_supported_video_codecs supported_video_codecs_software;
+    get_supported_video_codecs(egl, GSR_VIDEO_CODEC_H264, true, false, &supported_video_codecs_software);
+
     set_supported_video_codecs_ffmpeg(&supported_video_codecs, &supported_video_codecs_vulkan, egl->gpu_info.vendor);
 
-    if(supported_video_codecs.h264.supported)
-        puts("h264");
-    if(avcodec_find_encoder_by_name("libx264"))
-        puts("h264_software");
-    if(supported_video_codecs.hevc.supported)
-        puts("hevc");
-    if(supported_video_codecs.hevc_hdr.supported)
-        puts("hevc_hdr");
-    if(supported_video_codecs.hevc_10bit.supported)
-        puts("hevc_10bit");
-    if(supported_video_codecs.av1.supported)
-        puts("av1");
-    if(supported_video_codecs.av1_hdr.supported)
-        puts("av1_hdr");
-    if(supported_video_codecs.av1_10bit.supported)
-        puts("av1_10bit");
-    if(supported_video_codecs.vp8.supported)
-        puts("vp8");
-    if(supported_video_codecs.vp9.supported)
-        puts("vp9");
-    if(supported_video_codecs_vulkan.h264.supported)
-       puts("h264_vulkan");
-    if(supported_video_codecs_vulkan.hevc.supported)
-       puts("hevc_vulkan");
-    if(supported_video_codecs_vulkan.hevc_hdr.supported)
-        puts("hevc_hdr_vulkan");
-    if(supported_video_codecs_vulkan.hevc_10bit.supported)
-        puts("hevc_10bit_vulkan");
-    if(supported_video_codecs_vulkan.av1.supported)
-        puts("av1_vulkan");
-    if(supported_video_codecs_vulkan.av1_hdr.supported)
-        puts("av1_hdr_vulkan");
-    if(supported_video_codecs_vulkan.av1_10bit.supported)
-        puts("av1_10bit_vulkan");
+    const gsr_named_video_codec video_codecs[] = {
+        { "h264",              &supported_video_codecs.h264 },
+        { "h264_software",     &supported_video_codecs_software.h264 },
+        { "hevc",              &supported_video_codecs.hevc },
+        { "hevc_hdr",          &supported_video_codecs.hevc_hdr },
+        { "hevc_10bit",        &supported_video_codecs.hevc_10bit },
+        { "av1",               &supported_video_codecs.av1 },
+        { "av1_hdr",           &supported_video_codecs.av1_hdr },
+        { "av1_10bit",         &supported_video_codecs.av1_10bit },
+        { "vp8",               &supported_video_codecs.vp8 },
+        { "vp9",               &supported_video_codecs.vp9 },
+        { "h264_vulkan",       &supported_video_codecs_vulkan.h264 },
+        { "hevc_vulkan",       &supported_video_codecs_vulkan.hevc },
+        { "hevc_hdr_vulkan",   &supported_video_codecs_vulkan.hevc_hdr },
+        { "hevc_10bit_vulkan", &supported_video_codecs_vulkan.hevc_10bit },
+        { "av1_vulkan",        &supported_video_codecs_vulkan.av1 },
+        { "av1_hdr_vulkan",    &supported_video_codecs_vulkan.av1_hdr },
+        { "av1_10bit_vulkan",  &supported_video_codecs_vulkan.av1_10bit },
+    };
+    const int num_video_codecs = sizeof(video_codecs) / sizeof(video_codecs[0]);
+
+    puts("section=video_codecs");
+    list_video_codecs(video_codecs, num_video_codecs, false);
+    puts("section=video_yuv444");
+    list_video_codecs(video_codecs, num_video_codecs, true);
 }
 
 void run_recording_saved_script_async(const char *script_file, const char *video_file, const char *type) {
@@ -262,7 +269,6 @@ int info_command(void *userdata) {
     printf("gsr_version|%s\n", GSR_VERSION);
     puts("section=gpu_info");
     list_gpu_info(&windowing.egl);
-    puts("section=video_codecs");
     list_supported_video_codecs(&windowing.egl);
     puts("section=image_formats");
     puts("jpeg");

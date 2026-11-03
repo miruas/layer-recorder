@@ -144,18 +144,19 @@ static bool encoder_get_supported_profiles(const NV_ENCODE_API_FUNCTION_LIST *fu
     }
 
     const vec2i max_resolution = encoder_get_max_resolution(function_list, nvenc_encoder, encoder_guid, nvenc_api_version);
+    const gsr_supported_video_codec_yuv444 yuv444 = { nvenc_get_encoding_capability(function_list, nvenc_encoder, encoder_guid, nvenc_api_version, NV_ENC_CAPS_SUPPORT_YUV444_ENCODE) != 0, false };
     for(uint32_t i = 0; i < profile_guid_count; ++i) {
         if(profile_is_h264(&profile_guids[i])) {
-            supported_video_codecs->h264 = (gsr_supported_video_codec){ true, false, max_resolution };
+            supported_video_codecs->h264 = (gsr_supported_video_codec){ true, false, max_resolution, yuv444 };
         } else if(profile_is_hevc(&profile_guids[i])) {
-            supported_video_codecs->hevc = (gsr_supported_video_codec){ true, false, max_resolution };
+            supported_video_codecs->hevc = (gsr_supported_video_codec){ true, false, max_resolution, yuv444 };
         } else if(profile_is_hevc_10bit(&profile_guids[i])) {
-            supported_video_codecs->hevc_hdr = (gsr_supported_video_codec){ true, false, max_resolution };
-            supported_video_codecs->hevc_10bit = (gsr_supported_video_codec){ true, false, max_resolution };
+            supported_video_codecs->hevc_hdr = (gsr_supported_video_codec){ true, false, max_resolution, yuv444 };
+            supported_video_codecs->hevc_10bit = (gsr_supported_video_codec){ true, false, max_resolution, yuv444 };
         } else if(profile_is_av1(&profile_guids[i])) {
-            supported_video_codecs->av1 = (gsr_supported_video_codec){ true, false, max_resolution };
-            supported_video_codecs->av1_hdr = (gsr_supported_video_codec){ true, false, max_resolution };
-            supported_video_codecs->av1_10bit = (gsr_supported_video_codec){ true, false, max_resolution };
+            supported_video_codecs->av1 = (gsr_supported_video_codec){ true, false, max_resolution, { false, false } };
+            supported_video_codecs->av1_hdr = (gsr_supported_video_codec){ true, false, max_resolution, { false, false } };
+            supported_video_codecs->av1_10bit = (gsr_supported_video_codec){ true, false, max_resolution, { false, false } };
         }
     }
 

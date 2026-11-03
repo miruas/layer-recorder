@@ -203,7 +203,7 @@ static void usage_header(void) {
     printf("usage: %s [-w <window_id|monitor|focused|portal|region|v4l2_device_path>] [-c <container_format>] [-s WxH] [-region WxH+X+Y] [-f <fps>] [-a <audio_input>] "
            "[-q <quality>] [-r <replay_buffer_size_sec>] [-replay-storage ram|disk] [-restart-replay-on-save yes|no] "
            "[-k h264|hevc|av1|vp8|vp9|hevc_hdr|av1_hdr|hevc_10bit|av1_10bit] [-ac aac|opus|flac|mp3] [-ab <bitrate>] [-fm cfr|vfr|content] "
-           "[-bm auto|qp|vbr|cbr] [-cr limited|full] [-tune performance|quality] [-df yes|no] [-sc <script_path>] [-p <plugin_path>] "
+           "[-bm auto|qp|vbr|cbr] [-cr limited|full] [-pixfmt yuv420|yuv444] [-tune performance|quality] [-df yes|no] [-sc <script_path>] [-p <plugin_path>] "
            "[-cursor yes|no] [-keyint <value>] [-restore-portal-session yes|no] [-portal-session-token-filepath filepath] [-encoder gpu|cpu] "
            "[-fallback-cpu-encoding yes|no] [-o <output_file>] [-ro <output_directory>] [-ffmpeg-opts <options>] [-ffmpeg-video-opts <options>] [-ffmpeg-audio-opts <options>] "
            " [-auth <token>] [--list-capture-options [card_path]] "

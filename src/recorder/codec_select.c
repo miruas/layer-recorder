@@ -21,6 +21,7 @@ gsr_video_encoder* create_video_encoder(gsr_egl *egl, const gsr_recorder_setting
         gsr_video_encoder_software_params params;
         params.egl = egl;
         params.color_depth = color_depth;
+        params.yuv444 = settings->pixel_format == GSR_PIXEL_FORMAT_YUV444;
         video_encoder = gsr_video_encoder_software_create(&params);
         return video_encoder;
     }
@@ -29,6 +30,7 @@ gsr_video_encoder* create_video_encoder(gsr_egl *egl, const gsr_recorder_setting
         gsr_video_encoder_vulkan_params params;
         params.egl = egl;
         params.color_depth = color_depth;
+        params.yuv444 = settings->pixel_format == GSR_PIXEL_FORMAT_YUV444;
         video_encoder = gsr_video_encoder_vulkan_create(&params);
         return video_encoder;
     }
@@ -42,23 +44,15 @@ gsr_video_encoder* create_video_encoder(gsr_egl *egl, const gsr_recorder_setting
             gsr_video_encoder_vaapi_params params;
             params.egl = egl;
             params.color_depth = color_depth;
+            params.yuv444 = settings->pixel_format == GSR_PIXEL_FORMAT_YUV444;
             video_encoder = gsr_video_encoder_vaapi_create(&params);
             break;
         }
         case GSR_GPU_VENDOR_NVIDIA: {
-            AVDictionary *options = NULL;
-            if(settings->ffmpeg_video_opts)
-                av_dict_parse_string(&options, settings->ffmpeg_video_opts, "=", ";", 0);
-            const AVDictionaryEntry *rgb_mode = av_dict_get(options, "rgb_mode", NULL, 0);
             gsr_video_encoder_nvenc_params params;
             params.egl = egl;
             params.color_depth = color_depth;
-            params.rgb = rgb_mode && (strcmp(rgb_mode->value, "yuv444") == 0 || strcmp(rgb_mode->value, "2") == 0);
-            av_dict_free(&options);
-            if(params.rgb && color_depth != GSR_COLOR_DEPTH_8_BITS) {
-                gsr_log(GSR_LOG_LEVEL_ERROR, "RGB NVENC input requires an 8-bit video codec");
-                return NULL;
-            }
+            params.yuv444 = settings->pixel_format == GSR_PIXEL_FORMAT_YUV444;
             video_encoder = gsr_video_encoder_nvenc_create(&params);
             break;
         }
@@ -73,6 +67,7 @@ bool get_supported_video_codecs(gsr_egl *egl, gsr_video_codec video_codec, bool 
     if(use_software_video_encoder) {
         video_codecs->h264.supported = avcodec_find_encoder_by_name("libx264");
         video_codecs->h264.max_resolution = (vec2i){4096, 2304};
+        video_codecs->h264.yuv444.supported = video_codecs->h264.supported;
         return true;
     }
 
@@ -241,26 +236,33 @@ gsr_video_codec video_codec_fallback_for_container(gsr_video_codec video_codec, 
     return video_codec;
 }
 
-static bool video_codec_only_supports_low_power_mode(const gsr_supported_video_codecs *supported_video_codecs, gsr_video_codec video_codec) {
+static const gsr_supported_video_codec* get_supported_video_codec(const gsr_supported_video_codecs *supported_video_codecs, gsr_video_codec video_codec) {
     switch(video_codec) {
-        case GSR_VIDEO_CODEC_H264:              return supported_video_codecs->h264.low_power;
-        case GSR_VIDEO_CODEC_HEVC:              return supported_video_codecs->hevc.low_power;
-        case GSR_VIDEO_CODEC_HEVC_HDR:          return supported_video_codecs->hevc_hdr.low_power;
-        case GSR_VIDEO_CODEC_HEVC_10BIT:        return supported_video_codecs->hevc_10bit.low_power;
-        case GSR_VIDEO_CODEC_AV1:               return supported_video_codecs->av1.low_power;
-        case GSR_VIDEO_CODEC_AV1_HDR:           return supported_video_codecs->av1_hdr.low_power;
-        case GSR_VIDEO_CODEC_AV1_10BIT:         return supported_video_codecs->av1_10bit.low_power;
-        case GSR_VIDEO_CODEC_VP8:               return supported_video_codecs->vp8.low_power;
-        case GSR_VIDEO_CODEC_VP9:               return supported_video_codecs->vp9.low_power;
-        case GSR_VIDEO_CODEC_H264_VULKAN:       return supported_video_codecs->h264.low_power;
-        case GSR_VIDEO_CODEC_HEVC_VULKAN:       return supported_video_codecs->hevc.low_power;
-        case GSR_VIDEO_CODEC_HEVC_HDR_VULKAN:   return supported_video_codecs->hevc_hdr.low_power;
-        case GSR_VIDEO_CODEC_HEVC_10BIT_VULKAN: return supported_video_codecs->hevc_10bit.low_power;
-        case GSR_VIDEO_CODEC_AV1_VULKAN:        return supported_video_codecs->av1.low_power;
-        case GSR_VIDEO_CODEC_AV1_HDR_VULKAN:    return supported_video_codecs->av1_hdr.low_power;
-        case GSR_VIDEO_CODEC_AV1_10BIT_VULKAN:  return supported_video_codecs->av1_10bit.low_power;
+        case GSR_VIDEO_CODEC_H264:              return &supported_video_codecs->h264;
+        case GSR_VIDEO_CODEC_HEVC:              return &supported_video_codecs->hevc;
+        case GSR_VIDEO_CODEC_HEVC_HDR:          return &supported_video_codecs->hevc_hdr;
+        case GSR_VIDEO_CODEC_HEVC_10BIT:        return &supported_video_codecs->hevc_10bit;
+        case GSR_VIDEO_CODEC_AV1:               return &supported_video_codecs->av1;
+        case GSR_VIDEO_CODEC_AV1_HDR:           return &supported_video_codecs->av1_hdr;
+        case GSR_VIDEO_CODEC_AV1_10BIT:         return &supported_video_codecs->av1_10bit;
+        case GSR_VIDEO_CODEC_VP8:               return &supported_video_codecs->vp8;
+        case GSR_VIDEO_CODEC_VP9:               return &supported_video_codecs->vp9;
+        case GSR_VIDEO_CODEC_H264_VULKAN:       return &supported_video_codecs->h264;
+        case GSR_VIDEO_CODEC_HEVC_VULKAN:       return &supported_video_codecs->hevc;
+        case GSR_VIDEO_CODEC_HEVC_HDR_VULKAN:   return &supported_video_codecs->hevc_hdr;
+        case GSR_VIDEO_CODEC_HEVC_10BIT_VULKAN: return &supported_video_codecs->hevc_10bit;
+        case GSR_VIDEO_CODEC_AV1_VULKAN:        return &supported_video_codecs->av1;
+        case GSR_VIDEO_CODEC_AV1_HDR_VULKAN:    return &supported_video_codecs->av1_hdr;
+        case GSR_VIDEO_CODEC_AV1_10BIT_VULKAN:  return &supported_video_codecs->av1_10bit;
     }
-    return false;
+    return NULL;
+}
+
+static bool video_codec_only_supports_low_power_mode(const gsr_supported_video_codecs *supported_video_codecs, gsr_video_codec video_codec, bool yuv444) {
+    const gsr_supported_video_codec *supported_video_codec = get_supported_video_codec(supported_video_codecs, video_codec);
+    if(!supported_video_codec)
+        return false;
+    return yuv444 ? supported_video_codec->yuv444.low_power : supported_video_codec->low_power;
 }
 
 static const AVCodec* get_av_codec_if_supported(gsr_video_codec video_codec, gsr_egl *egl, bool use_software_video_encoder, const gsr_supported_video_codecs *supported_video_codecs) {
@@ -487,22 +489,42 @@ static int pick_video_codec(gsr_egl *egl, gsr_recorder_settings *settings, bool 
         return GSR_ERROR_VIDEO_CODEC_UNSUPPORTED;
     }
 
-    *low_power = video_codec_only_supports_low_power_mode(supported_video_codecs, settings->video_codec);
+    const bool yuv444 = settings->pixel_format == GSR_PIXEL_FORMAT_YUV444;
+    const gsr_supported_video_codec *supported_video_codec = get_supported_video_codec(supported_video_codecs, settings->video_codec);
+    if(yuv444 && !(supported_video_codec && supported_video_codec->yuv444.supported)) {
+        gsr_log(GSR_LOG_LEVEL_ERROR, "-pixfmt yuv444 is not supported with the '%s' video codec on your system. Run 'gpu-screen-recorder --info' to see which video codecs support yuv444", video_codec_to_string(settings->video_codec));
+        return GSR_ERROR_VIDEO_CODEC_UNSUPPORTED;
+    }
+
+    *low_power = video_codec_only_supports_low_power_mode(supported_video_codecs, settings->video_codec, yuv444);
     *video_codec = video_codec_f;
     return GSR_ERROR_OK;
 }
 
-gsr_video_codec select_appropriate_video_codec_automatically(vec2i video_size, const gsr_supported_video_codecs *supported_video_codecs) {
-    if(supported_video_codecs->h264.supported && codec_supports_resolution(supported_video_codecs->h264.max_resolution, video_size)) {
+static bool video_codec_can_be_selected_automatically(const gsr_supported_video_codec *supported_video_codec, vec2i video_size, bool yuv444) {
+    return supported_video_codec->supported
+        && codec_supports_resolution(supported_video_codec->max_resolution, video_size)
+        && (!yuv444 || supported_video_codec->yuv444.supported);
+}
+
+static void log_video_codec_selected_automatically(const char *video_codec_name, const char *skipped_video_codec_name, const gsr_supported_video_codec *skipped_video_codec, vec2i video_size, bool yuv444) {
+    if(yuv444 && skipped_video_codec->supported && !skipped_video_codec->yuv444.supported) {
+        gsr_log(GSR_LOG_LEVEL_INFO, "using %s encoder because a codec was not specified and %s doesn't support yuv444", video_codec_name, skipped_video_codec_name);
+    } else {
+        gsr_log(GSR_LOG_LEVEL_INFO, "using %s encoder because a codec was not specified and %s supported max resolution (%dx%d) is less than the capture resolution (%dx%d)", video_codec_name, skipped_video_codec_name,
+            skipped_video_codec->max_resolution.x, skipped_video_codec->max_resolution.y, video_size.x, video_size.y);
+    }
+}
+
+gsr_video_codec select_appropriate_video_codec_automatically(vec2i video_size, bool yuv444, const gsr_supported_video_codecs *supported_video_codecs) {
+    if(video_codec_can_be_selected_automatically(&supported_video_codecs->h264, video_size, yuv444)) {
         gsr_log(GSR_LOG_LEVEL_INFO, "using h264 encoder because a codec was not specified");
         return GSR_VIDEO_CODEC_H264;
-    } else if(supported_video_codecs->hevc.supported && codec_supports_resolution(supported_video_codecs->hevc.max_resolution, video_size)) {
-        gsr_log(GSR_LOG_LEVEL_INFO, "using hevc encoder because a codec was not specified and h264 supported max resolution (%dx%d) is less than the capture resolution (%dx%d)", supported_video_codecs->h264.max_resolution.x, supported_video_codecs->h264.max_resolution.y,
-            video_size.x, video_size.y);
+    } else if(video_codec_can_be_selected_automatically(&supported_video_codecs->hevc, video_size, yuv444)) {
+        log_video_codec_selected_automatically("hevc", "h264", &supported_video_codecs->h264, video_size, yuv444);
         return GSR_VIDEO_CODEC_HEVC;
-    } else if(supported_video_codecs->av1.supported && codec_supports_resolution(supported_video_codecs->av1.max_resolution, video_size)) {
-        gsr_log(GSR_LOG_LEVEL_INFO, "using av1 encoder because a codec was not specified and hevc supported max resolution (%dx%d) is less than the capture resolution (%dx%d)", supported_video_codecs->hevc.max_resolution.x, supported_video_codecs->hevc.max_resolution.y,
-            video_size.x, video_size.y);
+    } else if(video_codec_can_be_selected_automatically(&supported_video_codecs->av1, video_size, yuv444)) {
+        log_video_codec_selected_automatically("av1", "hevc", &supported_video_codecs->hevc, video_size, yuv444);
         return GSR_VIDEO_CODEC_AV1;
     } else {
         return (gsr_video_codec)-1;
@@ -529,7 +551,7 @@ int select_video_codec_with_fallback(vec2i video_size, gsr_recorder_settings *se
             gsr_log(GSR_LOG_LEVEL_INFO, "using h264 encoder because a codec was not specified");
             settings->video_codec = GSR_VIDEO_CODEC_H264;
         } else if(settings->video_encoder != GSR_VIDEO_ENCODER_HW_CPU) {
-            settings->video_codec = select_appropriate_video_codec_automatically(video_size, &supported_video_codecs_non_vulkan);
+            settings->video_codec = select_appropriate_video_codec_automatically(video_size, settings->pixel_format == GSR_PIXEL_FORMAT_YUV444, &supported_video_codecs_non_vulkan);
             if(settings->video_codec == (gsr_video_codec)-1) {
                 if(settings->fallback_cpu_encoding) {
                     gsr_log(GSR_LOG_LEVEL_WARNING, "gpu encoding is not available on your system or your gpu doesn't support recording at the resolution you are trying to record, trying cpu encoding instead because -fallback-cpu-encoding is enabled. Install the proper vaapi drivers on your system (if supported) if you experience performance issues");

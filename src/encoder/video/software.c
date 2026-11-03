@@ -12,10 +12,18 @@
 
 typedef struct {
     gsr_video_encoder_software_params params;
+    gsr_video_encoder_texture_format texture_format;
 
-    unsigned int target_textures[2];
-    vec2i texture_sizes[2];
+    unsigned int target_textures[GSR_COLOR_CONVERSION_MAX_DESTINATION_TEXTURES];
+    vec2i texture_sizes[GSR_COLOR_CONVERSION_MAX_DESTINATION_TEXTURES];
 } gsr_video_encoder_software;
+
+static gsr_destination_color gsr_video_encoder_software_get_destination_color(const gsr_video_encoder_software_params *params) {
+    if(params->yuv444)
+        return GSR_DESTINATION_COLOR_YUV444P;
+    else
+        return params->color_depth == GSR_COLOR_DEPTH_10_BITS ? GSR_DESTINATION_COLOR_P010 : GSR_DESTINATION_COLOR_NV12;
+}
 
 static bool gsr_video_encoder_software_setup_textures(gsr_video_encoder_software *self, AVCodecContext *video_codec_context, AVFrame *frame) {
     int res = av_frame_get_buffer(frame, LINESIZE_ALIGNMENT);
@@ -30,14 +38,10 @@ static bool gsr_video_encoder_software_setup_textures(gsr_video_encoder_software
         return false;
     }
 
-    const unsigned int internal_formats_nv12[2] = { GL_R8, GL_RG8 };
-    const unsigned int internal_formats_p010[2] = { GL_R16, GL_RG16 };
-    const unsigned int formats[2] = { GL_RED, GL_RG };
-    const int div[2] = {1, 2}; // divide UV texture size by 2 because chroma is half size
-
-    for(int i = 0; i < 2; ++i) {
-        self->texture_sizes[i] = (vec2i){ video_codec_context->width / div[i], video_codec_context->height / div[i] };
-        self->target_textures[i] = gl_create_texture(self->params.egl, self->texture_sizes[i].x, self->texture_sizes[i].y, self->params.color_depth == GSR_COLOR_DEPTH_8_BITS ? internal_formats_nv12[i] : internal_formats_p010[i], formats[i], GL_NEAREST);
+    for(int i = 0; i < self->texture_format.num_planes; ++i) {
+        const gsr_video_encoder_plane_format *plane = &self->texture_format.planes[i];
+        self->texture_sizes[i] = (vec2i){ video_codec_context->width / plane->size_divisor, video_codec_context->height / plane->size_divisor };
+        self->target_textures[i] = gl_create_texture(self->params.egl, self->texture_sizes[i].x, self->texture_sizes[i].y, plane->internal_format, plane->format, GL_NEAREST);
         if(self->target_textures[i] == 0) {
             gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_capture_kms_setup_cuda_textures: failed to create opengl texture");
             return false;
@@ -68,20 +72,19 @@ static bool gsr_video_encoder_software_start(gsr_video_encoder *encoder, AVCodec
 
 void gsr_video_encoder_software_stop(gsr_video_encoder_software *self, AVCodecContext *video_codec_context) {
     (void)video_codec_context;
-    self->params.egl->glDeleteTextures(2, self->target_textures);
-    self->target_textures[0] = 0;
-    self->target_textures[1] = 0;
+    self->params.egl->glDeleteTextures(GSR_COLOR_CONVERSION_MAX_DESTINATION_TEXTURES, self->target_textures);
+    for(int i = 0; i < GSR_COLOR_CONVERSION_MAX_DESTINATION_TEXTURES; ++i) {
+        self->target_textures[i] = 0;
+    }
 }
 
 static void gsr_video_encoder_software_copy_textures_to_frame(gsr_video_encoder *encoder, AVFrame *frame, gsr_color_conversion *color_conversion) {
-    (void)encoder;
-    //gsr_video_encoder_software *self = encoder->priv;
+    gsr_video_encoder_software *self = encoder->priv;
     // TODO: hdr support
-    const unsigned int formats[2] = { GL_RED, GL_RG };
-    const int div[2] = {1, 2}; // divide UV texture size by 2 because chroma is half size
-    for(int i = 0; i < 2; ++i) {
+    for(int i = 0; i < self->texture_format.num_planes; ++i) {
+        const gsr_video_encoder_plane_format *plane = &self->texture_format.planes[i];
         // TODO: Use glPixelStore?
-        gsr_color_conversion_read_destination_texture(color_conversion, i, 0, 0, frame->width / div[i], frame->height / div[i], formats[i], GL_UNSIGNED_BYTE, frame->data[i]);
+        gsr_color_conversion_read_destination_texture(color_conversion, i, 0, 0, frame->width / plane->size_divisor, frame->height / plane->size_divisor, plane->format, GL_UNSIGNED_BYTE, frame->data[i]);
     }
     // cap_kms->kms.base.egl->eglSwapBuffers(cap_kms->kms.base.egl->egl_display, cap_kms->kms.base.egl->egl_surface);
 
@@ -91,12 +94,12 @@ static void gsr_video_encoder_software_copy_textures_to_frame(gsr_video_encoder 
 
 static void gsr_video_encoder_software_get_textures(gsr_video_encoder *encoder, unsigned int *textures, vec2i *texture_sizes, int *num_textures, gsr_destination_color *destination_color) {
     gsr_video_encoder_software *self = encoder->priv;
-    textures[0] = self->target_textures[0];
-    textures[1] = self->target_textures[1];
-    texture_sizes[0] = self->texture_sizes[0];
-    texture_sizes[1] = self->texture_sizes[1];
-    *num_textures = 2;
-    *destination_color = self->params.color_depth == GSR_COLOR_DEPTH_10_BITS ? GSR_DESTINATION_COLOR_P010 : GSR_DESTINATION_COLOR_NV12;
+    for(int i = 0; i < self->texture_format.num_planes; ++i) {
+        textures[i] = self->target_textures[i];
+        texture_sizes[i] = self->texture_sizes[i];
+    }
+    *num_textures = self->texture_format.num_planes;
+    *destination_color = self->texture_format.destination_color;
 }
 
 static void gsr_video_encoder_software_destroy(gsr_video_encoder *encoder, AVCodecContext *video_codec_context) {
@@ -117,6 +120,7 @@ gsr_video_encoder* gsr_video_encoder_software_create(const gsr_video_encoder_sof
     }
 
     encoder_software->params = *params;
+    encoder_software->texture_format = gsr_video_encoder_get_texture_format(gsr_video_encoder_software_get_destination_color(params));
 
     *encoder = (gsr_video_encoder) {
         .start = gsr_video_encoder_software_start,

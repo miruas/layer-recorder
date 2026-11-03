@@ -100,6 +100,9 @@
 static int destination_color_get_bit_depth(gsr_destination_color color_format) {
     switch(color_format) {
         case GSR_DESTINATION_COLOR_P010:
+        case GSR_DESTINATION_COLOR_P410:
+        case GSR_DESTINATION_COLOR_YUV444P16:
+        case GSR_DESTINATION_COLOR_XV30:
             return 10;
         default:
             return 8;
@@ -109,9 +112,24 @@ static int destination_color_get_bit_depth(gsr_destination_color color_format) {
 static int destination_color_get_texture_bits(gsr_destination_color color_format) {
     switch(color_format) {
         case GSR_DESTINATION_COLOR_P010:
+        case GSR_DESTINATION_COLOR_P410:
+        case GSR_DESTINATION_COLOR_YUV444P16:
             return 16;
+        case GSR_DESTINATION_COLOR_XV30:
+            return 10;
         default:
             return 8;
+    }
+}
+
+static const char* destination_color_get_packed_yuv_swizzle(gsr_destination_color color_format) {
+    switch(color_format) {
+        case GSR_DESTINATION_COLOR_VUYX:
+            return "zyx";
+        case GSR_DESTINATION_COLOR_XV30:
+            return "yxz";
+        default:
+            return NULL;
     }
 }
 
@@ -159,6 +177,48 @@ static void rgb_to_yuv_matrix_to_glsl(const float *m, char *buffer, size_t buffe
         m[4],  m[5],  m[6],  m[7],
         m[8],  m[9],  m[10], m[11],
         m[12], m[13], m[14], m[15]);
+}
+
+typedef struct {
+    const char *vertex_position;
+    const char *fragment_outputs;
+    const char *fragment_write;
+} gsr_uv_shader_layout;
+
+static bool destination_color_is_planar_yuv444(gsr_destination_color color_format) {
+    return color_format == GSR_DESTINATION_COLOR_YUV444P || color_format == GSR_DESTINATION_COLOR_YUV444P16;
+}
+
+static bool destination_color_is_semi_planar_yuv444(gsr_destination_color color_format) {
+    return color_format == GSR_DESTINATION_COLOR_NV24 || color_format == GSR_DESTINATION_COLOR_P410;
+}
+
+static gsr_uv_shader_layout get_uv_shader_layout(gsr_destination_color color_format) {
+    const bool full_resolution_chroma = destination_color_is_planar_yuv444(color_format) || destination_color_is_semi_planar_yuv444(color_format);
+    const char *vertex_position = full_resolution_chroma
+        ? "  gl_Position = vec4(offset.x, offset.y, 0.0, 0.0) + vec4(pos.x, pos.y, 0.0, 1.0);    \n"
+        : "  gl_Position = (vec4(offset.x, offset.y, 0.0, 0.0) + vec4(pos.x, pos.y, 0.0, 1.0)) * vec4(0.5, 0.5, 1.0, 1.0) - vec4(0.5, 0.5, 0.0, 0.0);   \n";
+
+    if(destination_color_is_planar_yuv444(color_format)) {
+        return (gsr_uv_shader_layout){
+            .vertex_position = vertex_position,
+            .fragment_outputs =
+                "layout(location = 0) out vec4 FragColorU;                                             \n"
+                "layout(location = 1) out vec4 FragColorV;                                             \n",
+            .fragment_write =
+                "  FragColorU = vec4(chroma.x, 0.0, 0.0, alpha);                                       \n"
+                "  FragColorV = vec4(chroma.y, 0.0, 0.0, alpha);                                       \n",
+        };
+    }
+
+    return (gsr_uv_shader_layout){
+        .vertex_position = vertex_position,
+        .fragment_outputs =
+            "out vec4 FragColor;                                                                   \n",
+        .fragment_write =
+            "  FragColor.xy = chroma;                                                              \n"
+            "  FragColor.w = alpha;                                                                \n",
+    };
 }
 
 static int load_graphics_shader_y(gsr_shader *shader, gsr_egl *egl, gsr_color_graphics_uniforms *uniforms, const float *rgb_to_yuv_matrix, bool external_texture, bool hdr) {
@@ -237,9 +297,10 @@ static int load_graphics_shader_y(gsr_shader *shader, gsr_egl *egl, gsr_color_gr
     return 0;
 }
 
-static unsigned int load_graphics_shader_uv(gsr_shader *shader, gsr_egl *egl, gsr_color_graphics_uniforms *uniforms, const float *rgb_to_yuv_matrix, bool external_texture, bool hdr) {
+static unsigned int load_graphics_shader_uv(gsr_shader *shader, gsr_egl *egl, gsr_color_graphics_uniforms *uniforms, const float *rgb_to_yuv_matrix, gsr_destination_color color_format, bool external_texture, bool hdr) {
     char color_transform_matrix[512];
     rgb_to_yuv_matrix_to_glsl(rgb_to_yuv_matrix, color_transform_matrix, sizeof(color_transform_matrix));
+    const gsr_uv_shader_layout layout = get_uv_shader_layout(color_format);
 
     char vertex_shader[2048];
     snprintf(vertex_shader, sizeof(vertex_shader),
@@ -253,15 +314,16 @@ static unsigned int load_graphics_shader_uv(gsr_shader *shader, gsr_egl *egl, gs
         "void main()                                     \n"
         "{                                               \n"
         "  texcoords_out = vec2(texcoords.x - 0.5, texcoords.y - 0.5) * rotation_matrix + vec2(0.5, 0.5);                      \n"
-        "  gl_Position = (vec4(offset.x, offset.y, 0.0, 0.0) + vec4(pos.x, pos.y, 0.0, 1.0)) * vec4(0.5, 0.5, 1.0, 1.0) - vec4(0.5, 0.5, 0.0, 0.0);   \n"
-        "}                                               \n");
+        "%s"
+        "}                                               \n", layout.vertex_position);
 
-    char main_code[1024];
+    char main_code[2048];
     snprintf(main_code, sizeof(main_code),
             "  vec4 pixel = texture(tex1, texcoords_out);                                          \n"
             "%s"
-            "  FragColor.xy = (RGBtoYUV * vec4(pixel.rgb, 1.0)).yz;                                \n"
-            "  FragColor.w = pixel.a;                                                              \n", hdr ? APPLY_HDR_TO_SDR_TONE_MAPPING : "");
+            "  vec2 chroma = (RGBtoYUV * vec4(pixel.rgb, 1.0)).yz;                                 \n"
+            "  float alpha = pixel.a;                                                              \n"
+            "%s", hdr ? APPLY_HDR_TO_SDR_TONE_MAPPING : "", layout.fragment_write);
 
     char fragment_shader[16384];
     if(external_texture) {
@@ -272,26 +334,26 @@ static unsigned int load_graphics_shader_uv(gsr_shader *shader, gsr_egl *egl, gs
             "precision highp float;                                                              \n"
             "in vec2 texcoords_out;                                                                \n"
             "uniform samplerExternalOES tex1;                                                      \n"
-            "out vec4 FragColor;                                                                   \n"
+            "%s"
             "%s"
             "%s"
             "void main()                                                                           \n"
             "{                                                                                     \n"
             "%s"
-            "}                                                                                     \n", color_transform_matrix, hdr ? HDR_TO_SDR_TONE_MAPPING COLOR_MATRIX_GLSL GAMMA_LUT_GLSL : "", main_code);
+            "}                                                                                     \n", layout.fragment_outputs, color_transform_matrix, hdr ? HDR_TO_SDR_TONE_MAPPING COLOR_MATRIX_GLSL GAMMA_LUT_GLSL : "", main_code);
     } else {
         snprintf(fragment_shader, sizeof(fragment_shader),
             "#version 300 es                                                                       \n"
             "precision highp float;                                                              \n"
             "in vec2 texcoords_out;                                                                \n"
             "uniform sampler2D tex1;                                                               \n"
-            "out vec4 FragColor;                                                                   \n"
+            "%s"
             "%s"
             "%s"
             "void main()                                                                           \n"
             "{                                                                                     \n"
             "%s"
-            "}                                                                                     \n", color_transform_matrix, hdr ? HDR_TO_SDR_TONE_MAPPING COLOR_MATRIX_GLSL GAMMA_LUT_GLSL : "", main_code);
+            "}                                                                                     \n", layout.fragment_outputs, color_transform_matrix, hdr ? HDR_TO_SDR_TONE_MAPPING COLOR_MATRIX_GLSL GAMMA_LUT_GLSL : "", main_code);
     }
 
     if(gsr_shader_init(shader, egl, vertex_shader, fragment_shader) != 0)
@@ -313,7 +375,14 @@ static unsigned int load_graphics_shader_uv(gsr_shader *shader, gsr_egl *egl, gs
     return 0;
 }
 
-static unsigned int load_graphics_shader_rgb(gsr_shader *shader, gsr_egl *egl, gsr_color_graphics_uniforms *uniforms, bool external_texture, bool hdr) {
+static unsigned int load_graphics_shader_rgb(gsr_shader *shader, gsr_egl *egl, gsr_color_graphics_uniforms *uniforms, const float *rgb_to_yuv_matrix, gsr_destination_color color_format, bool external_texture, bool hdr) {
+    const char *packed_yuv_swizzle = destination_color_get_packed_yuv_swizzle(color_format);
+    char color_transform_matrix[512] = "";
+    char output_code[256] = "  FragColor = pixel;\n";
+    if(packed_yuv_swizzle) {
+        rgb_to_yuv_matrix_to_glsl(rgb_to_yuv_matrix, color_transform_matrix, sizeof(color_transform_matrix));
+        snprintf(output_code, sizeof(output_code), "  FragColor = vec4((RGBtoYUV * vec4(pixel.rgb, 1.0)).%s, pixel.a);\n", packed_yuv_swizzle);
+    }
     char vertex_shader[2048];
     snprintf(vertex_shader, sizeof(vertex_shader),
         "#version 300 es                                   \n"
@@ -333,7 +402,7 @@ static unsigned int load_graphics_shader_rgb(gsr_shader *shader, gsr_egl *egl, g
     snprintf(main_code, sizeof(main_code),
             "  vec4 pixel = texture(tex1, texcoords_out);                                          \n"
             "%s"
-            "  FragColor = pixel;                                                                  \n", hdr ? APPLY_HDR_TO_SDR_TONE_MAPPING : "");
+            "%s", hdr ? APPLY_HDR_TO_SDR_TONE_MAPPING : "", output_code);
 
     char fragment_shader[16384];
     if(external_texture) {
@@ -346,10 +415,11 @@ static unsigned int load_graphics_shader_rgb(gsr_shader *shader, gsr_egl *egl, g
             "uniform samplerExternalOES tex1;                                                      \n"
             "out vec4 FragColor;                                                                   \n"
             "%s"
+            "%s"
             "void main()                                                                           \n"
             "{                                                                                     \n"
             "%s"
-            "}                                                                                     \n", hdr ? HDR_TO_SDR_TONE_MAPPING COLOR_MATRIX_GLSL GAMMA_LUT_GLSL : "", main_code);
+            "}                                                                                     \n", color_transform_matrix, hdr ? HDR_TO_SDR_TONE_MAPPING COLOR_MATRIX_GLSL GAMMA_LUT_GLSL : "", main_code);
     } else {
         snprintf(fragment_shader, sizeof(fragment_shader),
             "#version 300 es                                                                       \n"
@@ -358,10 +428,11 @@ static unsigned int load_graphics_shader_rgb(gsr_shader *shader, gsr_egl *egl, g
             "uniform sampler2D tex1;                                                               \n"
             "out vec4 FragColor;                                                                   \n"
             "%s"
+            "%s"
             "void main()                                                                           \n"
             "{                                                                                     \n"
             "%s"
-            "}                                                                                     \n", hdr ? HDR_TO_SDR_TONE_MAPPING COLOR_MATRIX_GLSL GAMMA_LUT_GLSL : "", main_code);
+            "}                                                                                     \n", color_transform_matrix, hdr ? HDR_TO_SDR_TONE_MAPPING COLOR_MATRIX_GLSL GAMMA_LUT_GLSL : "", main_code);
     }
 
     if(gsr_shader_init(shader, egl, vertex_shader, fragment_shader) != 0)
@@ -444,7 +515,9 @@ static int load_graphics_shader_yuyv_to_y(gsr_shader *shader, gsr_egl *egl, gsr_
     return 0;
 }
 
-static unsigned int load_graphics_shader_yuyv_to_uv(gsr_shader *shader, gsr_egl *egl, gsr_color_graphics_uniforms *uniforms, bool external_texture) {
+static unsigned int load_graphics_shader_yuyv_to_uv(gsr_shader *shader, gsr_egl *egl, gsr_color_graphics_uniforms *uniforms, gsr_destination_color color_format, bool external_texture) {
+    const gsr_uv_shader_layout layout = get_uv_shader_layout(color_format);
+
     char vertex_shader[2048];
     snprintf(vertex_shader, sizeof(vertex_shader),
         "#version 300 es                                 \n"
@@ -457,10 +530,11 @@ static unsigned int load_graphics_shader_yuyv_to_uv(gsr_shader *shader, gsr_egl 
         "void main()                                     \n"
         "{                                               \n"
         "  texcoords_out = vec2(texcoords.x - 0.5, texcoords.y - 0.5) * rotation_matrix + vec2(0.5, 0.5);                      \n"
-        "  gl_Position = (vec4(offset.x, offset.y, 0.0, 0.0) + vec4(pos.x, pos.y, 0.0, 1.0)) * vec4(0.5, 0.5, 1.0, 1.0) - vec4(0.5, 0.5, 0.0, 0.0);   \n"
-        "}                                               \n");
+        "%s"
+        "}                                               \n", layout.vertex_position);
 
-    const char *main_code =
+    char main_code[2048];
+    snprintf(main_code, sizeof(main_code),
             "    vec2 resolution = vec2(textureSize(tex1, 0));\n"
             "    ivec2 uv = ivec2(texcoords_out * resolution);\n"
             "    float u = 0.0;\n"
@@ -475,10 +549,11 @@ static unsigned int load_graphics_shader_yuyv_to_uv(gsr_shader *shader, gsr_egl 
             "        u = prev_color.g;\n"
             "        v = this_color.g;\n"
             "    }\n"
-            "    FragColor.rg = vec2(u, v);\n"
-            "    FragColor.w = 1.0;\n";
+            "    vec2 chroma = vec2(u, v);\n"
+            "    float alpha = 1.0;\n"
+            "%s", layout.fragment_write);
 
-    char fragment_shader[2048];
+    char fragment_shader[4096];
     if(external_texture) {
         snprintf(fragment_shader, sizeof(fragment_shader),
             "#version 300 es                                                                       \n"
@@ -487,22 +562,22 @@ static unsigned int load_graphics_shader_yuyv_to_uv(gsr_shader *shader, gsr_egl 
             "precision highp float;                                                                \n"
             "in vec2 texcoords_out;                                                                \n"
             "uniform samplerExternalOES tex1;                                                      \n"
-            "out vec4 FragColor;                                                                   \n"
+            "%s"
             "void main()                                                                           \n"
             "{                                                                                     \n"
             "%s"
-            "}                                                                                     \n", main_code);
+            "}                                                                                     \n", layout.fragment_outputs, main_code);
     } else {
         snprintf(fragment_shader, sizeof(fragment_shader),
             "#version 300 es                                                                       \n"
             "precision highp float;                                                                \n"
             "in vec2 texcoords_out;                                                                \n"
             "uniform sampler2D tex1;                                                               \n"
-            "out vec4 FragColor;                                                                   \n"
+            "%s"
             "void main()                                                                           \n"
             "{                                                                                     \n"
             "%s"
-            "}                                                                                     \n", main_code);
+            "}                                                                                     \n", layout.fragment_outputs, main_code);
     }
 
     if(gsr_shader_init(shader, egl, vertex_shader, fragment_shader) != 0)
@@ -518,7 +593,17 @@ static unsigned int load_graphics_shader_yuyv_to_uv(gsr_shader *shader, gsr_egl 
     return 0;
 }
 
-static unsigned int load_graphics_shader_yuyv_to_rgb(gsr_shader *shader, gsr_egl *egl, gsr_color_graphics_uniforms *uniforms, bool external_texture) {
+static unsigned int load_graphics_shader_yuyv_to_rgb(gsr_shader *shader, gsr_egl *egl, gsr_color_graphics_uniforms *uniforms, gsr_destination_color color_format, bool external_texture) {
+    const char *packed_yuv_swizzle = destination_color_get_packed_yuv_swizzle(color_format);
+    char output_code[256] =
+        "    FragColor = vec4(\n"
+        "        y + 1.4065 * (v - 0.5),\n"
+        "        y - 0.3455 * (u - 0.5) - 0.7169 * (v - 0.5),\n"
+        "        y + 1.1790 * (u - 0.5),\n"
+        "        1.0);\n";
+    if(packed_yuv_swizzle)
+        snprintf(output_code, sizeof(output_code), "    FragColor = vec4(vec3(y, u, v).%s, 1.0);\n", packed_yuv_swizzle);
+
     char vertex_shader[2048];
     snprintf(vertex_shader, sizeof(vertex_shader),
         "#version 300 es                                   \n"
@@ -534,7 +619,8 @@ static unsigned int load_graphics_shader_yuyv_to_rgb(gsr_shader *shader, gsr_egl
         "  gl_Position = vec4(offset.x, offset.y, 0.0, 0.0) + vec4(pos.x, pos.y, 0.0, 1.0);    \n"
         "}                                                 \n");
 
-    const char *main_code =
+    char main_code[2048];
+    snprintf(main_code, sizeof(main_code),
         "    vec2 resolution = vec2(textureSize(tex1, 0));\n"
         "    ivec2 uv = ivec2(texcoords_out * resolution);\n"
         "    float y = 0.0;\n"
@@ -552,11 +638,7 @@ static unsigned int load_graphics_shader_yuyv_to_rgb(gsr_shader *shader, gsr_egl
         "        u = prev_color.g;\n"
         "        v = this_color.g;\n"
         "    }\n"
-        "    FragColor = vec4(\n"
-        "        y + 1.4065 * (v - 0.5),\n"
-        "        y - 0.3455 * (u - 0.5) - 0.7169 * (v - 0.5),\n"
-        "        y + 1.1790 * (u - 0.5),\n"
-        "        1.0);\n";
+        "%s", output_code);
 
     char fragment_shader[4096];
     if(external_texture) {
@@ -601,13 +683,17 @@ static unsigned int load_graphics_shader_yuyv_to_rgb(gsr_shader *shader, gsr_egl
 static bool gsr_color_conversion_load_hdr_graphics_shaders(gsr_color_conversion *self) {
     switch(self->params.destination_color) {
         case GSR_DESTINATION_COLOR_NV12:
-        case GSR_DESTINATION_COLOR_P010: {
+        case GSR_DESTINATION_COLOR_P010:
+        case GSR_DESTINATION_COLOR_NV24:
+        case GSR_DESTINATION_COLOR_P410:
+        case GSR_DESTINATION_COLOR_YUV444P:
+        case GSR_DESTINATION_COLOR_YUV444P16: {
             if(load_graphics_shader_y(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_Y_HDR], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_Y_HDR], self->rgb_to_yuv_matrix, false, true) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_load_hdr_graphics_shaders: failed to load Y graphics shader (hdr)");
                 return false;
             }
 
-            if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV_HDR], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV_HDR], self->rgb_to_yuv_matrix, false, true) != 0) {
+            if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV_HDR], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV_HDR], self->rgb_to_yuv_matrix, self->params.destination_color, false, true) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_load_hdr_graphics_shaders: failed to load UV graphics shader (hdr)");
                 return false;
             }
@@ -618,21 +704,23 @@ static bool gsr_color_conversion_load_hdr_graphics_shaders(gsr_color_conversion 
                     return false;
                 }
 
-                if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV_HDR_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV_HDR_EXTERNAL], self->rgb_to_yuv_matrix, true, true) != 0) {
+                if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV_HDR_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV_HDR_EXTERNAL], self->rgb_to_yuv_matrix, self->params.destination_color, true, true) != 0) {
                     gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_load_hdr_graphics_shaders: failed to load UV graphics shader (hdr, external)");
                     return false;
                 }
             }
             break;
         }
+        case GSR_DESTINATION_COLOR_VUYX:
+        case GSR_DESTINATION_COLOR_XV30:
         case GSR_DESTINATION_COLOR_RGB: {
-            if(load_graphics_shader_rgb(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_RGB_HDR], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_RGB_HDR], false, true) != 0) {
+            if(load_graphics_shader_rgb(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_RGB_HDR], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_RGB_HDR], self->rgb_to_yuv_matrix, self->params.destination_color, false, true) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_load_hdr_graphics_shaders: failed to load RGB graphics shader (hdr)");
                 return false;
             }
 
             if(self->params.load_external_image_shader) {
-                if(load_graphics_shader_rgb(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_RGB_HDR_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_RGB_HDR_EXTERNAL], true, true) != 0) {
+                if(load_graphics_shader_rgb(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_RGB_HDR_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_RGB_HDR_EXTERNAL], self->rgb_to_yuv_matrix, self->params.destination_color, true, true) != 0) {
                     gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_load_hdr_graphics_shaders: failed to load RGB graphics shader (hdr, external)");
                     return false;
                 }
@@ -674,9 +762,13 @@ static int load_framebuffers(gsr_color_conversion *self) {
     }
 
     if(self->params.num_destination_textures > 1) {
+        const unsigned int chroma_draw_buffers[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+        const int num_chroma_textures = self->params.num_destination_textures - 1;
         self->params.egl->glBindFramebuffer(GL_FRAMEBUFFER, self->framebuffers[1]);
-        self->params.egl->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self->params.destination_textures[1], 0);
-        self->params.egl->glDrawBuffers(1, &draw_buffer);
+        for(int i = 0; i < num_chroma_textures; ++i) {
+            self->params.egl->glFramebufferTexture2D(GL_FRAMEBUFFER, chroma_draw_buffers[i], GL_TEXTURE_2D, self->params.destination_textures[1 + i], 0);
+        }
+        self->params.egl->glDrawBuffers(num_chroma_textures, chroma_draw_buffers);
         if(self->params.egl->glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
             gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: failed to create framebuffer for UV");
             goto err;
@@ -712,13 +804,17 @@ static int create_vertices(gsr_color_conversion *self) {
 static bool gsr_color_conversion_load_graphics_shaders(gsr_color_conversion *self) {
     switch(self->params.destination_color) {
         case GSR_DESTINATION_COLOR_NV12:
-        case GSR_DESTINATION_COLOR_P010: {
+        case GSR_DESTINATION_COLOR_P010:
+        case GSR_DESTINATION_COLOR_NV24:
+        case GSR_DESTINATION_COLOR_P410:
+        case GSR_DESTINATION_COLOR_YUV444P:
+        case GSR_DESTINATION_COLOR_YUV444P16: {
             if(load_graphics_shader_y(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_Y], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_Y], self->rgb_to_yuv_matrix, false, false) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: failed to load Y graphics shader");
                 return false;
             }
 
-            if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV], self->rgb_to_yuv_matrix, false, false) != 0) {
+            if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV], self->rgb_to_yuv_matrix, self->params.destination_color, false, false) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: failed to load UV graphics shader");
                 return false;
             }
@@ -728,19 +824,21 @@ static bool gsr_color_conversion_load_graphics_shaders(gsr_color_conversion *sel
                 return false;
             }
 
-            if(load_graphics_shader_yuyv_to_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_YUYV_TO_UV], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_YUYV_TO_UV], false) != 0) {
+            if(load_graphics_shader_yuyv_to_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_YUYV_TO_UV], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_YUYV_TO_UV], self->params.destination_color, false) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: failed to load YUYV to UV graphics shader");
                 return false;
             }
             break;
         }
+        case GSR_DESTINATION_COLOR_VUYX:
+        case GSR_DESTINATION_COLOR_XV30:
         case GSR_DESTINATION_COLOR_RGB: {
-            if(load_graphics_shader_rgb(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_RGB], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_RGB], false, false) != 0) {
+            if(load_graphics_shader_rgb(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_RGB], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_RGB], self->rgb_to_yuv_matrix, self->params.destination_color, false, false) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: failed to load RGB graphics shader");
                 return false;
             }
 
-            if(load_graphics_shader_yuyv_to_rgb(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_YUYV_TO_RGB], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_YUYV_TO_RGB], false) != 0) {
+            if(load_graphics_shader_yuyv_to_rgb(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_YUYV_TO_RGB], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_YUYV_TO_RGB], self->params.destination_color, false) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: failed to load YUYV to RGB graphics shader");
                 return false;
             }
@@ -753,13 +851,17 @@ static bool gsr_color_conversion_load_graphics_shaders(gsr_color_conversion *sel
 static bool gsr_color_conversion_load_external_graphics_shaders(gsr_color_conversion *self) {
     switch(self->params.destination_color) {
         case GSR_DESTINATION_COLOR_NV12:
-        case GSR_DESTINATION_COLOR_P010: {
+        case GSR_DESTINATION_COLOR_P010:
+        case GSR_DESTINATION_COLOR_NV24:
+        case GSR_DESTINATION_COLOR_P410:
+        case GSR_DESTINATION_COLOR_YUV444P:
+        case GSR_DESTINATION_COLOR_YUV444P16: {
             if(load_graphics_shader_y(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_Y_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_Y_EXTERNAL], self->rgb_to_yuv_matrix, true, false) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: failed to load Y graphics shader (external)");
                 return false;
             }
 
-            if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV_EXTERNAL], self->rgb_to_yuv_matrix, true, false) != 0) {
+            if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV_EXTERNAL], self->rgb_to_yuv_matrix, self->params.destination_color, true, false) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: failed to load UV graphics shader (external)");
                 return false;
             }
@@ -769,19 +871,21 @@ static bool gsr_color_conversion_load_external_graphics_shaders(gsr_color_conver
                 return false;
             }
 
-            if(load_graphics_shader_yuyv_to_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_YUYV_TO_UV_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_YUYV_TO_UV_EXTERNAL], true) != 0) {
+            if(load_graphics_shader_yuyv_to_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_YUYV_TO_UV_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_YUYV_TO_UV_EXTERNAL], self->params.destination_color, true) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: failed to load YUYV to UV graphics shader (external)");
                 return false;
             }
             break;
         }
+        case GSR_DESTINATION_COLOR_VUYX:
+        case GSR_DESTINATION_COLOR_XV30:
         case GSR_DESTINATION_COLOR_RGB: {
-            if(load_graphics_shader_rgb(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_RGB_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_RGB_EXTERNAL], true, false) != 0) {
+            if(load_graphics_shader_rgb(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_RGB_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_RGB_EXTERNAL], self->rgb_to_yuv_matrix, self->params.destination_color, true, false) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: failed to load RGB graphics shader (external)");
                 return false;
             }
 
-            if(load_graphics_shader_yuyv_to_rgb(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_YUYV_TO_RGB_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_YUYV_TO_RGB_EXTERNAL], true) != 0) {
+            if(load_graphics_shader_yuyv_to_rgb(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_YUYV_TO_RGB_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_YUYV_TO_RGB_EXTERNAL], self->params.destination_color, true) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: failed to load YUYV to RGB graphics shader (external)");
                 return false;
             }
@@ -800,16 +904,28 @@ int gsr_color_conversion_init(gsr_color_conversion *self, const gsr_color_conver
 
     switch(self->params.destination_color) {
         case GSR_DESTINATION_COLOR_NV12:
-        case GSR_DESTINATION_COLOR_P010: {
+        case GSR_DESTINATION_COLOR_P010:
+        case GSR_DESTINATION_COLOR_NV24:
+        case GSR_DESTINATION_COLOR_P410: {
             if(self->params.num_destination_textures != 2) {
-                gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: expected 2 destination textures for destination color NV12/P010, got %d destination texture(s)", self->params.num_destination_textures);
+                gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: expected 2 destination textures for destination color NV12/P010/NV24/P410, got %d destination texture(s)", self->params.num_destination_textures);
                 goto err;
             }
             break;
         }
+        case GSR_DESTINATION_COLOR_YUV444P:
+        case GSR_DESTINATION_COLOR_YUV444P16: {
+            if(self->params.num_destination_textures != 3) {
+                gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: expected 3 destination textures for destination color YUV444P/YUV444P16, got %d destination texture(s)", self->params.num_destination_textures);
+                goto err;
+            }
+            break;
+        }
+        case GSR_DESTINATION_COLOR_VUYX:
+        case GSR_DESTINATION_COLOR_XV30:
         case GSR_DESTINATION_COLOR_RGB: {
             if(self->params.num_destination_textures != 1) {
-                gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: expected 1 destination textures for destination color RGB8, got %d destination texture(s)", self->params.num_destination_textures);
+                gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: expected 1 destination textures for destination color RGB/VUYX/XV30, got %d destination texture(s)", self->params.num_destination_textures);
                 goto err;
             }
             break;
@@ -1001,7 +1117,11 @@ static void gsr_color_conversion_draw_graphics(gsr_color_conversion *self, unsig
         case GSR_SOURCE_COLOR_BGR: {
             switch(self->params.destination_color) {
                 case GSR_DESTINATION_COLOR_NV12:
-                case GSR_DESTINATION_COLOR_P010: {
+                case GSR_DESTINATION_COLOR_P010:
+                case GSR_DESTINATION_COLOR_NV24:
+                case GSR_DESTINATION_COLOR_P410:
+                case GSR_DESTINATION_COLOR_YUV444P:
+                case GSR_DESTINATION_COLOR_YUV444P16: {
                     self->params.egl->glBindFramebuffer(GL_FRAMEBUFFER, self->framebuffers[0]);
                     //cap_xcomp->params.egl->glClear(GL_COLOR_BUFFER_BIT); // TODO: Do this in a separate clear_ function. We want to do that when using multiple drm to create the final image (multiple monitors for example)
 
@@ -1044,6 +1164,8 @@ static void gsr_color_conversion_draw_graphics(gsr_color_conversion *self, unsig
                     }
                     break;
                 }
+                case GSR_DESTINATION_COLOR_VUYX:
+                case GSR_DESTINATION_COLOR_XV30:
                 case GSR_DESTINATION_COLOR_RGB: {
                     self->params.egl->glBindFramebuffer(GL_FRAMEBUFFER, self->framebuffers[0]);
                     //cap_xcomp->params.egl->glClear(GL_COLOR_BUFFER_BIT); // TODO: Do this in a separate clear_ function. We want to do that when using multiple drm to create the final image (multiple monitors for example)
@@ -1072,7 +1194,11 @@ static void gsr_color_conversion_draw_graphics(gsr_color_conversion *self, unsig
         case GSR_SOURCE_COLOR_YUYV: {
             switch(self->params.destination_color) {
                 case GSR_DESTINATION_COLOR_NV12:
-                case GSR_DESTINATION_COLOR_P010: {
+                case GSR_DESTINATION_COLOR_P010:
+                case GSR_DESTINATION_COLOR_NV24:
+                case GSR_DESTINATION_COLOR_P410:
+                case GSR_DESTINATION_COLOR_YUV444P:
+                case GSR_DESTINATION_COLOR_YUV444P16: {
                     self->params.egl->glBindFramebuffer(GL_FRAMEBUFFER, self->framebuffers[0]);
                     //cap_xcomp->params.egl->glClear(GL_COLOR_BUFFER_BIT); // TODO: Do this in a separate clear_ function. We want to do that when using multiple drm to create the final image (multiple monitors for example)
 
@@ -1094,6 +1220,8 @@ static void gsr_color_conversion_draw_graphics(gsr_color_conversion *self, unsig
                     }
                     break;
                 }
+                case GSR_DESTINATION_COLOR_VUYX:
+                case GSR_DESTINATION_COLOR_XV30:
                 case GSR_DESTINATION_COLOR_RGB: {
                     self->params.egl->glBindFramebuffer(GL_FRAMEBUFFER, self->framebuffers[0]);
                     //cap_xcomp->params.egl->glClear(GL_COLOR_BUFFER_BIT); // TODO: Do this in a separate clear_ function. We want to do that when using multiple drm to create the final image (multiple monitors for example)
@@ -1158,10 +1286,26 @@ void gsr_color_conversion_clear(gsr_color_conversion *self) {
 
     switch(self->params.destination_color) {
         case GSR_DESTINATION_COLOR_NV12:
-        case GSR_DESTINATION_COLOR_P010: {
+        case GSR_DESTINATION_COLOR_P010:
+        case GSR_DESTINATION_COLOR_NV24:
+        case GSR_DESTINATION_COLOR_P410:
+        case GSR_DESTINATION_COLOR_YUV444P:
+        case GSR_DESTINATION_COLOR_YUV444P16: {
             color1[0] = self->rgb_to_yuv_matrix[12];
             color2[0] = self->rgb_to_yuv_matrix[13];
             color2[1] = self->rgb_to_yuv_matrix[14];
+            break;
+        }
+        case GSR_DESTINATION_COLOR_VUYX: {
+            color1[0] = self->rgb_to_yuv_matrix[14];
+            color1[1] = self->rgb_to_yuv_matrix[13];
+            color1[2] = self->rgb_to_yuv_matrix[12];
+            break;
+        }
+        case GSR_DESTINATION_COLOR_XV30: {
+            color1[0] = self->rgb_to_yuv_matrix[13];
+            color1[1] = self->rgb_to_yuv_matrix[12];
+            color1[2] = self->rgb_to_yuv_matrix[14];
             break;
         }
         case GSR_DESTINATION_COLOR_RGB: {
@@ -1243,8 +1387,12 @@ void gsr_color_conversion_set_color_matrix(gsr_color_conversion *self, const flo
 
 void gsr_color_conversion_read_destination_texture(gsr_color_conversion *self, int destination_texture_index, int x, int y, int width, int height, unsigned int color_format, unsigned int data_format, void *pixels) {
     assert(destination_texture_index >= 0 && destination_texture_index < self->params.num_destination_textures);
-    self->params.egl->glBindFramebuffer(GL_FRAMEBUFFER, self->framebuffers[destination_texture_index]);
+    const int framebuffer_index = destination_texture_index == 0 ? 0 : 1;
+    const int attachment_index = destination_texture_index - framebuffer_index;
+    self->params.egl->glBindFramebuffer(GL_FRAMEBUFFER, self->framebuffers[framebuffer_index]);
+    self->params.egl->glReadBuffer(GL_COLOR_ATTACHMENT0 + attachment_index);
     self->params.egl->glReadPixels(x, y, width, height, color_format, data_format, pixels);
+    self->params.egl->glReadBuffer(GL_COLOR_ATTACHMENT0);
     self->params.egl->glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 

@@ -46,6 +46,14 @@ static bool profile_is_hevc_10bit(VAProfile profile) {
     }
 }
 
+static bool profile_is_hevc_yuv444_8bit(VAProfile profile) {
+    return profile == VAProfileHEVCMain444;
+}
+
+static bool profile_is_hevc_yuv444_10bit(VAProfile profile) {
+    return profile == VAProfileHEVCMain444_10;
+}
+
 static bool profile_is_av1(VAProfile profile) {
     switch(profile) {
         case VAProfileAV1Profile0:
@@ -124,6 +132,23 @@ static VAEntrypoint profile_get_video_encoding_entrypoint(VADisplay va_dpy, VAPr
     return encoding_entrypoint;
 }
 
+static bool profile_is_known_codec(VAProfile profile) {
+    return profile_is_h264(profile) || profile_is_hevc_8bit(profile) || profile_is_hevc_10bit(profile) || profile_is_hevc_yuv444_8bit(profile)
+        || profile_is_hevc_yuv444_10bit(profile) || profile_is_av1(profile) || profile_is_vp8(profile) || profile_is_vp9(profile);
+}
+
+static gsr_supported_video_codec profile_get_supported_video_codec(VADisplay va_dpy, VAProfile profile) {
+    const VAEntrypoint encoding_entrypoint = profile_get_video_encoding_entrypoint(va_dpy, profile);
+    if(encoding_entrypoint == 0)
+        return (gsr_supported_video_codec){0};
+
+    return (gsr_supported_video_codec){
+        .supported = true,
+        .low_power = encoding_entrypoint == VAEntrypointEncSliceLP,
+        .max_resolution = profile_entrypoint_get_max_resolution(va_dpy, profile, encoding_entrypoint),
+    };
+}
+
 static bool get_supported_video_codecs(VADisplay va_dpy, gsr_supported_video_codecs *video_codecs, bool cleanup) {
     *video_codecs = (gsr_supported_video_codecs){0};
     bool success = false;
@@ -146,48 +171,46 @@ static bool get_supported_video_codecs(VADisplay va_dpy, gsr_supported_video_cod
     if(!profile_list || vaQueryConfigProfiles(va_dpy, profile_list, &num_profiles) != VA_STATUS_SUCCESS)
         goto fail;
 
+    gsr_supported_video_codec_yuv444 hevc_yuv444_8bit = {0};
+    gsr_supported_video_codec_yuv444 hevc_yuv444_10bit = {0};
+
     for(int i = 0; i < num_profiles; ++i) {
-        if(profile_is_h264(profile_list[i])) {
-            const VAEntrypoint encoding_entrypoint = profile_get_video_encoding_entrypoint(va_dpy, profile_list[i]);
-            if(encoding_entrypoint != 0) {
-                const vec2i max_resolution = profile_entrypoint_get_max_resolution(va_dpy, profile_list[i], encoding_entrypoint);
-                video_codecs->h264 = (gsr_supported_video_codec){ true, encoding_entrypoint == VAEntrypointEncSliceLP, max_resolution };
-            }
-        } else if(profile_is_hevc_8bit(profile_list[i])) {
-            const VAEntrypoint encoding_entrypoint = profile_get_video_encoding_entrypoint(va_dpy, profile_list[i]);
-            if(encoding_entrypoint != 0) {
-                const vec2i max_resolution = profile_entrypoint_get_max_resolution(va_dpy, profile_list[i], encoding_entrypoint);
-                video_codecs->hevc = (gsr_supported_video_codec){ true, encoding_entrypoint == VAEntrypointEncSliceLP, max_resolution };
-            }
-        } else if(profile_is_hevc_10bit(profile_list[i])) {
-            const VAEntrypoint encoding_entrypoint = profile_get_video_encoding_entrypoint(va_dpy, profile_list[i]);
-            if(encoding_entrypoint != 0) {
-                const vec2i max_resolution = profile_entrypoint_get_max_resolution(va_dpy, profile_list[i], encoding_entrypoint);
-                video_codecs->hevc_hdr = (gsr_supported_video_codec){ true, encoding_entrypoint == VAEntrypointEncSliceLP, max_resolution };
-                video_codecs->hevc_10bit = (gsr_supported_video_codec){ true, encoding_entrypoint == VAEntrypointEncSliceLP, max_resolution };
-            }
-        } else if(profile_is_av1(profile_list[i])) {
-            const VAEntrypoint encoding_entrypoint = profile_get_video_encoding_entrypoint(va_dpy, profile_list[i]);
-            if(encoding_entrypoint != 0) {
-                const vec2i max_resolution = profile_entrypoint_get_max_resolution(va_dpy, profile_list[i], encoding_entrypoint);
-                video_codecs->av1 = (gsr_supported_video_codec){ true, encoding_entrypoint == VAEntrypointEncSliceLP, max_resolution };
-                video_codecs->av1_hdr = (gsr_supported_video_codec){ true, encoding_entrypoint == VAEntrypointEncSliceLP, max_resolution };
-                video_codecs->av1_10bit = (gsr_supported_video_codec){ true, encoding_entrypoint == VAEntrypointEncSliceLP, max_resolution };
-            }
-        } else if(profile_is_vp8(profile_list[i])) {
-            const VAEntrypoint encoding_entrypoint = profile_get_video_encoding_entrypoint(va_dpy, profile_list[i]);
-            if(encoding_entrypoint != 0) {
-                const vec2i max_resolution = profile_entrypoint_get_max_resolution(va_dpy, profile_list[i], encoding_entrypoint);
-                video_codecs->vp8 = (gsr_supported_video_codec){ true, encoding_entrypoint == VAEntrypointEncSliceLP, max_resolution };
-            }
-        } else if(profile_is_vp9(profile_list[i])) {
-            const VAEntrypoint encoding_entrypoint = profile_get_video_encoding_entrypoint(va_dpy, profile_list[i]);
-            if(encoding_entrypoint != 0) {
-                const vec2i max_resolution = profile_entrypoint_get_max_resolution(va_dpy, profile_list[i], encoding_entrypoint);
-                video_codecs->vp9 = (gsr_supported_video_codec){ true, encoding_entrypoint == VAEntrypointEncSliceLP, max_resolution };
-            }
+        const VAProfile profile = profile_list[i];
+        if(!profile_is_known_codec(profile))
+            continue;
+
+        const gsr_supported_video_codec supported_video_codec = profile_get_supported_video_codec(va_dpy, profile);
+        if(!supported_video_codec.supported)
+            continue;
+
+        if(profile_is_h264(profile)) {
+            video_codecs->h264 = supported_video_codec;
+        } else if(profile_is_hevc_8bit(profile)) {
+            video_codecs->hevc = supported_video_codec;
+        } else if(profile_is_hevc_10bit(profile)) {
+            video_codecs->hevc_hdr = supported_video_codec;
+            video_codecs->hevc_10bit = supported_video_codec;
+        } else if(profile_is_hevc_yuv444_8bit(profile)) {
+            hevc_yuv444_8bit = (gsr_supported_video_codec_yuv444){ true, supported_video_codec.low_power };
+        } else if(profile_is_hevc_yuv444_10bit(profile)) {
+            hevc_yuv444_10bit = (gsr_supported_video_codec_yuv444){ true, supported_video_codec.low_power };
+        } else if(profile_is_av1(profile)) {
+            video_codecs->av1 = supported_video_codec;
+            video_codecs->av1_hdr = supported_video_codec;
+            video_codecs->av1_10bit = supported_video_codec;
+        } else if(profile_is_vp8(profile)) {
+            video_codecs->vp8 = supported_video_codec;
+        } else if(profile_is_vp9(profile)) {
+            video_codecs->vp9 = supported_video_codec;
         }
     }
+
+    if(video_codecs->hevc.supported)
+        video_codecs->hevc.yuv444 = hevc_yuv444_8bit;
+    if(video_codecs->hevc_10bit.supported)
+        video_codecs->hevc_10bit.yuv444 = hevc_yuv444_10bit;
+    if(video_codecs->hevc_hdr.supported)
+        video_codecs->hevc_hdr.yuv444 = hevc_yuv444_10bit;
 
     success = true;
     fail:

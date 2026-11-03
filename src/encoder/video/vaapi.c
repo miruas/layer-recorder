@@ -16,15 +16,34 @@
 #include <fcntl.h>
 
 typedef struct {
+    uint32_t drm_format;
+    int size_divisor;
+} gsr_video_encoder_vaapi_layer_format;
+
+typedef struct {
     gsr_video_encoder_vaapi_params params;
 
     unsigned int target_textures[2];
     vec2i texture_sizes[2];
+    int num_textures;
 
     AVBufferRef *device_ctx;
     VADisplay va_dpy;
-    VADRMPRIMESurfaceDescriptor prime;
 } gsr_video_encoder_vaapi;
+
+static enum AVPixelFormat gsr_video_encoder_vaapi_get_sw_format(const gsr_video_encoder_vaapi_params *params) {
+    const bool ten_bit = params->color_depth == GSR_COLOR_DEPTH_10_BITS;
+    if(params->yuv444)
+        return ten_bit ? AV_PIX_FMT_XV30LE : AV_PIX_FMT_VUYX;
+    return ten_bit ? AV_PIX_FMT_P010LE : AV_PIX_FMT_NV12;
+}
+
+static gsr_destination_color gsr_video_encoder_vaapi_get_destination_color(const gsr_video_encoder_vaapi_params *params) {
+    const bool ten_bit = params->color_depth == GSR_COLOR_DEPTH_10_BITS;
+    if(params->yuv444)
+        return ten_bit ? GSR_DESTINATION_COLOR_XV30 : GSR_DESTINATION_COLOR_VUYX;
+    return ten_bit ? GSR_DESTINATION_COLOR_P010 : GSR_DESTINATION_COLOR_NV12;
+}
 
 static bool gsr_video_encoder_vaapi_setup_context(gsr_video_encoder_vaapi *self, AVCodecContext *video_codec_context) {
     char render_path[128];
@@ -48,7 +67,7 @@ static bool gsr_video_encoder_vaapi_setup_context(gsr_video_encoder_vaapi *self,
     AVHWFramesContext *hw_frame_context = (AVHWFramesContext*)frame_context->data;
     hw_frame_context->width = video_codec_context->width;
     hw_frame_context->height = video_codec_context->height;
-    hw_frame_context->sw_format = self->params.color_depth == GSR_COLOR_DEPTH_10_BITS ? AV_PIX_FMT_P010LE : AV_PIX_FMT_NV12;
+    hw_frame_context->sw_format = gsr_video_encoder_vaapi_get_sw_format(&self->params);
     hw_frame_context->format = video_codec_context->pix_fmt;
     hw_frame_context->device_ctx = (AVHWDeviceContext*)self->device_ctx->data;
 
@@ -73,6 +92,116 @@ static uint32_t fourcc(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
     return (d << 24) | (c << 16) | (b << 8) | a;
 }
 
+static int get_layer_formats(uint32_t va_fourcc, gsr_video_encoder_vaapi_layer_format *layer_formats) {
+    switch(va_fourcc) {
+        case VA_FOURCC_NV12:
+            layer_formats[0] = (gsr_video_encoder_vaapi_layer_format){ fourcc('R', '8', ' ', ' '), 1 };
+            layer_formats[1] = (gsr_video_encoder_vaapi_layer_format){ fourcc('G', 'R', '8', '8'), 2 };
+            return 2;
+        case VA_FOURCC_P010:
+            layer_formats[0] = (gsr_video_encoder_vaapi_layer_format){ fourcc('R', '1', '6', ' '), 1 };
+            layer_formats[1] = (gsr_video_encoder_vaapi_layer_format){ fourcc('G', 'R', '3', '2'), 2 };
+            return 2;
+#ifdef VA_FOURCC_XYUV
+        case VA_FOURCC_XYUV:
+            layer_formats[0] = (gsr_video_encoder_vaapi_layer_format){ fourcc('A', 'B', '2', '4'), 1 };
+            return 1;
+#endif
+#ifdef VA_FOURCC_Y410
+        case VA_FOURCC_Y410:
+            layer_formats[0] = (gsr_video_encoder_vaapi_layer_format){ fourcc('A', 'B', '3', '0'), 1 };
+            return 1;
+#endif
+    }
+    return 0;
+}
+
+static void close_prime_fds(VADRMPRIMESurfaceDescriptor *prime) {
+    for(uint32_t i = 0; i < prime->num_objects; ++i) {
+        if(prime->objects[i].fd > 0)
+            close(prime->objects[i].fd);
+    }
+}
+
+static bool import_prime_layer(gsr_video_encoder_vaapi *self, const VADRMPRIMESurfaceDescriptor *prime, int layer, const gsr_video_encoder_vaapi_layer_format *layer_format, unsigned int texture) {
+    int fds[4];
+    uint32_t offsets[4];
+    uint32_t pitches[4];
+    uint64_t modifiers[4];
+    for(uint32_t j = 0; j < prime->layers[layer].num_planes; ++j) {
+        fds[j] = prime->objects[prime->layers[layer].object_index[j]].fd;
+        offsets[j] = prime->layers[layer].offset[j];
+        pitches[j] = prime->layers[layer].pitch[j];
+        modifiers[j] = prime->objects[prime->layers[layer].object_index[j]].drm_format_modifier;
+    }
+
+    const vec2i size = { prime->width / layer_format->size_divisor, prime->height / layer_format->size_divisor };
+    intptr_t img_attr[44];
+    setup_dma_buf_attrs(img_attr, layer_format->drm_format, size.x, size.y, fds, offsets, pitches, modifiers, prime->layers[layer].num_planes, true);
+
+    while(self->params.egl->eglGetError() != EGL_SUCCESS){}
+    EGLImage image = self->params.egl->eglCreateImage(self->params.egl->egl_display, 0, EGL_LINUX_DMA_BUF_EXT, NULL, img_attr);
+    if(!image) {
+        gsr_log(GSR_LOG_LEVEL_ERROR, "import_prime_layer: failed to create egl image from drm fd for output drm fd, error: %d", self->params.egl->eglGetError());
+        return false;
+    }
+
+    self->params.egl->glBindTexture(GL_TEXTURE_2D, texture);
+    self->params.egl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    self->params.egl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    while(self->params.egl->glGetError()) {}
+    while(self->params.egl->eglGetError() != EGL_SUCCESS){}
+    self->params.egl->glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, image);
+    const bool success = self->params.egl->glGetError() == 0 && self->params.egl->eglGetError() == EGL_SUCCESS;
+    if(!success) {
+        // TODO: Get the error properly
+        gsr_log(GSR_LOG_LEVEL_ERROR, "import_prime_layer: failed to bind egl image to gl texture, error: %d", self->params.egl->eglGetError());
+    }
+
+    self->params.egl->eglDestroyImage(self->params.egl->egl_display, image);
+    self->params.egl->glBindTexture(GL_TEXTURE_2D, 0);
+    self->texture_sizes[layer] = size;
+    return success;
+}
+
+static bool import_surface(gsr_video_encoder_vaapi *self, VASurfaceID surface_id) {
+    VADRMPRIMESurfaceDescriptor prime;
+    VAStatus va_status = vaExportSurfaceHandle(self->va_dpy, surface_id, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, VA_EXPORT_SURFACE_WRITE_ONLY | VA_EXPORT_SURFACE_SEPARATE_LAYERS, &prime);
+    if(va_status != VA_STATUS_SUCCESS) {
+        gsr_log(GSR_LOG_LEVEL_ERROR, "import_surface: vaExportSurfaceHandle failed, error: %d", va_status);
+        return false;
+    }
+    vaSyncSurface(self->va_dpy, surface_id);
+
+    gsr_video_encoder_vaapi_layer_format layer_formats[2];
+    const int num_textures = get_layer_formats(prime.fourcc, layer_formats);
+    if(num_textures == 0) {
+        gsr_log(GSR_LOG_LEVEL_ERROR, "import_surface: unexpected fourcc %u for output drm fd, expected nv12, p010, xyuv or y410", prime.fourcc);
+        close_prime_fds(&prime);
+        return false;
+    }
+
+    self->params.egl->glGenTextures(num_textures, self->target_textures);
+
+    bool success = true;
+    for(int i = 0; i < num_textures && success; ++i) {
+        success = import_prime_layer(self, &prime, i, &layer_formats[i], self->target_textures[i]);
+    }
+
+    close_prime_fds(&prime);
+
+    if(!success) {
+        self->params.egl->glDeleteTextures(num_textures, self->target_textures);
+        self->target_textures[0] = 0;
+        self->target_textures[1] = 0;
+        return false;
+    }
+
+    self->num_textures = num_textures;
+    return true;
+}
+
 static bool gsr_video_encoder_vaapi_setup_textures(gsr_video_encoder_vaapi *self, AVCodecContext *video_codec_context, AVFrame *frame) {
     const int res = av_hwframe_get_buffer(video_codec_context->hw_frames_ctx, frame, 0);
     if(res < 0) {
@@ -80,74 +209,7 @@ static bool gsr_video_encoder_vaapi_setup_textures(gsr_video_encoder_vaapi *self
         return false;
     }
 
-    VASurfaceID target_surface_id = (uintptr_t)frame->data[3];
-
-    VAStatus va_status = vaExportSurfaceHandle(self->va_dpy, target_surface_id, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, VA_EXPORT_SURFACE_WRITE_ONLY | VA_EXPORT_SURFACE_SEPARATE_LAYERS, &self->prime);
-    if(va_status != VA_STATUS_SUCCESS) {
-        gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_video_encoder_vaapi_setup_textures: vaExportSurfaceHandle failed, error: %d", va_status);
-        return false;
-    }
-    vaSyncSurface(self->va_dpy, target_surface_id);
-
-    const uint32_t formats_nv12[2] = { fourcc('R', '8', ' ', ' '), fourcc('G', 'R', '8', '8') };
-    const uint32_t formats_p010[2] = { fourcc('R', '1', '6', ' '), fourcc('G', 'R', '3', '2') };
-
-    if(self->prime.fourcc == VA_FOURCC_NV12 || self->prime.fourcc == VA_FOURCC_P010) {
-        const uint32_t *formats = self->prime.fourcc == VA_FOURCC_NV12 ? formats_nv12 : formats_p010;
-        const int div[2] = {1, 2}; // divide UV texture size by 2 because chroma is half size
-
-        self->params.egl->glGenTextures(2, self->target_textures);
-        for(int i = 0; i < 2; ++i) {
-            const int layer = i;
-
-            int fds[4];
-            uint32_t offsets[4];
-            uint32_t pitches[4];
-            uint64_t modifiers[4];
-            for(uint32_t j = 0; j < self->prime.layers[layer].num_planes; ++j) {
-                // TODO: Close these? in _stop, using self->prime
-                fds[j] = self->prime.objects[self->prime.layers[layer].object_index[j]].fd;
-                offsets[j] = self->prime.layers[layer].offset[j];
-                pitches[j] = self->prime.layers[layer].pitch[j];
-                modifiers[j] = self->prime.objects[self->prime.layers[layer].object_index[j]].drm_format_modifier;
-            }
-
-            intptr_t img_attr[44];
-            setup_dma_buf_attrs(img_attr, formats[i], self->prime.width / div[i], self->prime.height / div[i],
-                fds, offsets, pitches, modifiers, self->prime.layers[layer].num_planes, true);
-            self->texture_sizes[i] = (vec2i){ self->prime.width / div[i], self->prime.height / div[i] };
-
-            while(self->params.egl->eglGetError() != EGL_SUCCESS){}
-            EGLImage image = self->params.egl->eglCreateImage(self->params.egl->egl_display, 0, EGL_LINUX_DMA_BUF_EXT, NULL, img_attr);
-            if(!image) {
-                gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_video_encoder_vaapi_setup_textures: failed to create egl image from drm fd for output drm fd, error: %d", self->params.egl->eglGetError());
-                return false;
-            }
-
-            self->params.egl->glBindTexture(GL_TEXTURE_2D, self->target_textures[i]);
-            self->params.egl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            self->params.egl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-            while(self->params.egl->glGetError()) {}
-            while(self->params.egl->eglGetError() != EGL_SUCCESS){}
-            self->params.egl->glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, image);
-            if(self->params.egl->glGetError() != 0 || self->params.egl->eglGetError() != EGL_SUCCESS) {
-                // TODO: Get the error properly
-                gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_video_encoder_vaapi_setup_textures: failed to bind egl image to gl texture, error: %d", self->params.egl->eglGetError());
-                self->params.egl->eglDestroyImage(self->params.egl->egl_display, image);
-                self->params.egl->glBindTexture(GL_TEXTURE_2D, 0);
-                return false;
-            }
-
-            self->params.egl->eglDestroyImage(self->params.egl->egl_display, image);
-            self->params.egl->glBindTexture(GL_TEXTURE_2D, 0);
-        }
-
-        return true;
-    } else {
-        gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_video_encoder_vaapi_setup_textures: unexpected fourcc %u for output drm fd, expected nv12 or p010", self->prime.fourcc);
-        return false;
-    }
+    return import_surface(self, (uintptr_t)frame->data[3]);
 }
 
 static void gsr_video_encoder_vaapi_stop(gsr_video_encoder_vaapi *self, AVCodecContext *video_codec_context);
@@ -298,23 +360,16 @@ void gsr_video_encoder_vaapi_stop(gsr_video_encoder_vaapi *self, AVCodecContext 
         av_buffer_unref(&video_codec_context->hw_frames_ctx);
     if(self->device_ctx)
         av_buffer_unref(&self->device_ctx);
-
-    for(uint32_t i = 0; i < self->prime.num_objects; ++i) {
-        if(self->prime.objects[i].fd > 0) {
-            close(self->prime.objects[i].fd);
-            self->prime.objects[i].fd = 0;
-        }
-    }
 }
 
 static void gsr_video_encoder_vaapi_get_textures(gsr_video_encoder *encoder, unsigned int *textures, vec2i *texture_sizes, int *num_textures, gsr_destination_color *destination_color) {
     gsr_video_encoder_vaapi *self = encoder->priv;
-    textures[0] = self->target_textures[0];
-    textures[1] = self->target_textures[1];
-    texture_sizes[0] = self->texture_sizes[0];
-    texture_sizes[1] = self->texture_sizes[1];
-    *num_textures = 2;
-    *destination_color = self->params.color_depth == GSR_COLOR_DEPTH_10_BITS ? GSR_DESTINATION_COLOR_P010 : GSR_DESTINATION_COLOR_NV12;
+    for(int i = 0; i < self->num_textures; ++i) {
+        textures[i] = self->target_textures[i];
+        texture_sizes[i] = self->texture_sizes[i];
+    }
+    *num_textures = self->num_textures;
+    *destination_color = gsr_video_encoder_vaapi_get_destination_color(&self->params);
 }
 
 static void gsr_video_encoder_vaapi_destroy(gsr_video_encoder *encoder, AVCodecContext *video_codec_context) {

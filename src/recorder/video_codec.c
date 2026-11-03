@@ -190,7 +190,7 @@ AVCodecContext *create_video_codec_context(enum AVPixelFormat pix_fmt, const AVC
     return codec_context;
 }
 
-static void dict_set_profile(AVCodecContext *codec_context, gsr_gpu_vendor vendor, gsr_color_depth color_depth, gsr_video_codec video_codec, AVDictionary **options) {
+static void dict_set_profile(AVCodecContext *codec_context, gsr_gpu_vendor vendor, gsr_color_depth color_depth, gsr_video_codec video_codec, bool yuv444, AVDictionary **options) {
     #if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(61, 17, 100)
     if(codec_context->codec_id == AV_CODEC_ID_H264) {
         // TODO: Only for vaapi
@@ -206,7 +206,9 @@ static void dict_set_profile(AVCodecContext *codec_context, gsr_gpu_vendor vendo
             av_dict_set(options, "profile", "main", 0); // TODO: use professional instead?
         }
     } else if(codec_context->codec_id == AV_CODEC_ID_HEVC) {
-        if(color_depth == GSR_COLOR_DEPTH_10_BITS)
+        if(yuv444)
+            av_dict_set(options, "profile", "rext", 0);
+        else if(color_depth == GSR_COLOR_DEPTH_10_BITS)
             av_dict_set(options, "profile", "main10", 0);
         else
             av_dict_set(options, "profile", "main", 0);
@@ -224,10 +226,12 @@ static void dict_set_profile(AVCodecContext *codec_context, gsr_gpu_vendor vendo
             if(color_depth == GSR_COLOR_DEPTH_10_BITS)
                 av_dict_set_int(options, "highbitdepth", 1, 0);
         } else {
-            av_dict_set_int(options, "profile", AV_PROFILE_AV1_MAIN, 0); // TODO: use professional instead?
+            av_dict_set_int(options, "profile", yuv444 ? AV_PROFILE_AV1_HIGH : AV_PROFILE_AV1_MAIN, 0); // TODO: use professional instead?
         }
     } else if(codec_context->codec_id == AV_CODEC_ID_HEVC) {
-        if(color_depth == GSR_COLOR_DEPTH_10_BITS)
+        if(yuv444)
+            av_dict_set_int(options, "profile", use_nvidia_values ? 2 : AV_PROFILE_HEVC_REXT, 0);
+        else if(color_depth == GSR_COLOR_DEPTH_10_BITS)
             av_dict_set_int(options, "profile", use_nvidia_values ? 1 : AV_PROFILE_HEVC_MAIN_10, 0);
         else
             av_dict_set_int(options, "profile", use_nvidia_values ? 0 : AV_PROFILE_HEVC_MAIN, 0);
@@ -320,7 +324,8 @@ bool open_video_hardware(AVCodecContext *codec_context, bool low_power, const gs
 
     // TODO: Enable multipass
 
-    dict_set_profile(codec_context, egl->gpu_info.vendor, color_depth, settings->video_codec, &options);
+    const bool yuv444 = settings->pixel_format == GSR_PIXEL_FORMAT_YUV444;
+    dict_set_profile(codec_context, egl->gpu_info.vendor, color_depth, settings->video_codec, yuv444, &options);
 
     if(video_codec_is_vulkan(settings->video_codec)) {
         av_dict_set_int(&options, "async_depth", 3, 0);
@@ -372,15 +377,6 @@ bool open_video_hardware(AVCodecContext *codec_context, bool low_power, const gs
             //         av_dict_set_int(&options, "profile", AV_PROFILE_H264_HIGH_444, 0);
             //         break;
             // }
-        } else if(codec_context->codec_id == AV_CODEC_ID_AV1) {
-            switch(settings->pixel_format) {
-                case GSR_PIXEL_FORMAT_YUV420:
-                    av_dict_set(&options, "rgb_mode", "yuv420", 0);
-                    break;
-                case GSR_PIXEL_FORMAT_YUV444:
-                    av_dict_set(&options, "rgb_mode", "yuv444", 0);
-                    break;
-            }
         } else if(codec_context->codec_id == AV_CODEC_ID_HEVC) {
             //av_dict_set(&options, "pix_fmt", "yuv420p16le", 0);
         }
@@ -423,9 +419,9 @@ bool open_video_hardware(AVCodecContext *codec_context, bool low_power, const gs
     return true;
 }
 
-enum AVPixelFormat get_pixel_format(gsr_video_codec video_codec, gsr_gpu_vendor vendor, bool use_software_video_encoder) {
+enum AVPixelFormat get_pixel_format(gsr_video_codec video_codec, gsr_gpu_vendor vendor, gsr_pixel_format pixel_format, bool use_software_video_encoder) {
     if(use_software_video_encoder) {
-        return AV_PIX_FMT_NV12;
+        return pixel_format == GSR_PIXEL_FORMAT_YUV444 ? AV_PIX_FMT_YUV444P : AV_PIX_FMT_NV12;
     } else {
         if(video_codec_is_vulkan(video_codec))
             return AV_PIX_FMT_VULKAN;
