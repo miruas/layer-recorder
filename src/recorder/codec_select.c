@@ -408,6 +408,14 @@ void force_cpu_encoding(gsr_recorder_settings *settings) {
     }
 }
 
+static bool video_codec_supports_yuv444(const gsr_supported_video_codecs *supported_video_codecs, const gsr_recorder_settings *settings) {
+    if(settings->video_encoder == GSR_VIDEO_ENCODER_HW_CPU)
+        return settings->video_codec == GSR_VIDEO_CODEC_H264;
+
+    const gsr_supported_video_codec *supported_video_codec = get_supported_video_codec(supported_video_codecs, settings->video_codec);
+    return supported_video_codec && supported_video_codec->yuv444.supported;
+}
+
 static int pick_video_codec(gsr_egl *egl, gsr_recorder_settings *settings, bool use_fallback_codec, bool *low_power, gsr_supported_video_codecs *supported_video_codecs, const AVCodec **video_codec) {
     // TODO: software encoder for hevc, av1, vp8 and vp9
     *video_codec = NULL;
@@ -489,14 +497,12 @@ static int pick_video_codec(gsr_egl *egl, gsr_recorder_settings *settings, bool 
         return GSR_ERROR_VIDEO_CODEC_UNSUPPORTED;
     }
 
-    const bool yuv444 = settings->pixel_format == GSR_PIXEL_FORMAT_YUV444;
-    const gsr_supported_video_codec *supported_video_codec = get_supported_video_codec(supported_video_codecs, settings->video_codec);
-    if(yuv444 && !(supported_video_codec && supported_video_codec->yuv444.supported)) {
-        gsr_log(GSR_LOG_LEVEL_ERROR, "-pixfmt yuv444 is not supported with the '%s' video codec on your system. Run 'gpu-screen-recorder --info' to see which video codecs support yuv444", video_codec_to_string(settings->video_codec));
-        return GSR_ERROR_VIDEO_CODEC_UNSUPPORTED;
+    if(settings->pixel_format == GSR_PIXEL_FORMAT_YUV444 && !video_codec_supports_yuv444(supported_video_codecs, settings)) {
+        gsr_log(GSR_LOG_LEVEL_WARNING, "-pixfmt yuv444 is not supported with the '%s' video codec on your system, using yuv420 instead. Run 'gpu-screen-recorder --info' to see which video codecs support yuv444 on your system (the video_yuv444 section)", video_codec_to_string(settings->video_codec));
+        settings->pixel_format = GSR_PIXEL_FORMAT_YUV420;
     }
 
-    *low_power = video_codec_only_supports_low_power_mode(supported_video_codecs, settings->video_codec, yuv444);
+    *low_power = video_codec_only_supports_low_power_mode(supported_video_codecs, settings->video_codec, settings->pixel_format == GSR_PIXEL_FORMAT_YUV444);
     *video_codec = video_codec_f;
     return GSR_ERROR_OK;
 }
@@ -514,6 +520,12 @@ static void log_video_codec_selected_automatically(const char *video_codec_name,
         gsr_log(GSR_LOG_LEVEL_INFO, "using %s encoder because a codec was not specified and %s supported max resolution (%dx%d) is less than the capture resolution (%dx%d)", video_codec_name, skipped_video_codec_name,
             skipped_video_codec->max_resolution.x, skipped_video_codec->max_resolution.y, video_size.x, video_size.y);
     }
+}
+
+static bool any_video_codec_can_be_selected_automatically(const gsr_supported_video_codecs *supported_video_codecs, vec2i video_size, bool yuv444) {
+    return video_codec_can_be_selected_automatically(&supported_video_codecs->h264, video_size, yuv444)
+        || video_codec_can_be_selected_automatically(&supported_video_codecs->hevc, video_size, yuv444)
+        || video_codec_can_be_selected_automatically(&supported_video_codecs->av1, video_size, yuv444);
 }
 
 gsr_video_codec select_appropriate_video_codec_automatically(vec2i video_size, bool yuv444, const gsr_supported_video_codecs *supported_video_codecs) {
@@ -551,7 +563,14 @@ int select_video_codec_with_fallback(vec2i video_size, gsr_recorder_settings *se
             gsr_log(GSR_LOG_LEVEL_INFO, "using h264 encoder because a codec was not specified");
             settings->video_codec = GSR_VIDEO_CODEC_H264;
         } else if(settings->video_encoder != GSR_VIDEO_ENCODER_HW_CPU) {
-            settings->video_codec = select_appropriate_video_codec_automatically(video_size, settings->pixel_format == GSR_PIXEL_FORMAT_YUV444, &supported_video_codecs_non_vulkan);
+            const bool yuv444 = settings->pixel_format == GSR_PIXEL_FORMAT_YUV444;
+            settings->video_codec = select_appropriate_video_codec_automatically(video_size, yuv444, &supported_video_codecs_non_vulkan);
+            if(settings->video_codec == (gsr_video_codec)-1 && yuv444 && any_video_codec_can_be_selected_automatically(&supported_video_codecs_non_vulkan, video_size, false)) {
+                gsr_log(GSR_LOG_LEVEL_WARNING, "-pixfmt yuv444 is not supported by your gpu with h264, hevc nor av1, using yuv420 instead. Run 'gpu-screen-recorder --info' to see which video codecs support yuv444 on your system (the video_yuv444 section)");
+                settings->pixel_format = GSR_PIXEL_FORMAT_YUV420;
+                settings->video_codec = select_appropriate_video_codec_automatically(video_size, false, &supported_video_codecs_non_vulkan);
+            }
+
             if(settings->video_codec == (gsr_video_codec)-1) {
                 if(settings->fallback_cpu_encoding) {
                     gsr_log(GSR_LOG_LEVEL_WARNING, "gpu encoding is not available on your system or your gpu doesn't support recording at the resolution you are trying to record, trying cpu encoding instead because -fallback-cpu-encoding is enabled. Install the proper vaapi drivers on your system (if supported) if you experience performance issues");

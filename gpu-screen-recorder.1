@@ -361,6 +361,7 @@ but it increases the file size and is not supported by all video players, websit
 .br
 yuv444 is only supported by some video codecs and GPUs, for example h264 and hevc on NVIDIA, hevc on Intel and h264 with
 .BR "-encoder cpu" .
+yuv420 is used instead (with a warning) if the video codec doesn't support yuv444 on your system.
 .br
 Run
 .B --info
