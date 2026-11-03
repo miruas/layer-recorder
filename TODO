@@ -7,10 +7,6 @@ Allow recording all monitors/selected monitor without nvfbc by recording the com
 Disable flipping on nvidia? this might fix some stuttering issues on some setups. See NvCtrlGetAttribute/NvCtrlSetAttributeAndGetStatus NV_CTRL_SYNC_TO_VBLANK https://github.com/NVIDIA/nvidia-settings/blob/d5f022976368cbceb2f20b838ddb0bf992f0cfb9/src/gtk%2B-2.x/ctkopengl.c.
 Cleanup unused gl/egl functions, macro, etc.
 Reverse engineer nvapi so we can disable "force p2 state" on linux too (nvapi profile api with the settings id 0x50166c5e).
-Support yuv444p on amd/intel.
-fix yuv444 for hevc.
-Do not allow streaming if yuv444.
-Re-enable yuv444 and allow yuv444 for software encoding. Good for remote desktop. But for remote desktop its more ideal to use yuv420 and when the image is not moving then send a png image instead, for clear image when the image is static.
 Support 10 bit output because of better gradients. May even be smaller file size. Better supported on hevc (not supported at all on h264 on my gpu).
 Add nvidia/(amd/intel) specific install script for ubuntu. User should run install_ubuntu.sh but it should run different install dep script depending on if /proc/driver/nvidia/version exists or not. But what about switchable graphics setup?
 Test different combinations of switchable graphics. Intel hybrid mode (running intel but possible to run specific applications with prime-run), running pure intel. Detect switchable graphics.
@@ -265,8 +261,6 @@ Either support webcam support with raw yuyv, mapping the buffer directly to open
 Allow medium, high, very_high and ultra quality for -bm cbr. If that is used then it will automatically estimate the best bitrate for that quality based on resolution and fps.
     Maybe do this in the ui instead (or both?), to show estimated file size.
 
-Maybe remove shader compute code. It doesn't seem necessary anymore now that glSwapBuffer/glFinish isn't used. dbus server isn't needed anymore either, the code can be moved back to the gpu screen recorder process.
-
 Add proper check if opengl functions are supported. dlsym for the symbol will return a no-op function if it's not supported, so it silently fails if used.
 
 Colors are offset to bottom left by 1 pixel or so on steam deck in landscape mode.
@@ -445,3 +439,4 @@ Add IPC to change the monitor that is being recorded (or add/remove capture targ
 
 There is a risk that systems with multiple gpus and the same port connection has the same name for -w.
 
+Improve recording multiple sources. The capture source for those should only update when there is an update (when recording with -fm content).
