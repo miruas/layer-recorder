@@ -363,6 +363,7 @@ static bool gsr_egl_proc_load_egl(gsr_egl *self) {
     self->glDeleteSemaphoresEXT = (FUNC_glDeleteSemaphoresEXT)self->eglGetProcAddress("glDeleteSemaphoresEXT");
     self->glImportSemaphoreFdEXT = (FUNC_glImportSemaphoreFdEXT)self->eglGetProcAddress("glImportSemaphoreFdEXT");
     self->glSignalSemaphoreEXT = (FUNC_glSignalSemaphoreEXT)self->eglGetProcAddress("glSignalSemaphoreEXT");
+    self->glWaitSemaphoreEXT = (FUNC_glWaitSemaphoreEXT)self->eglGetProcAddress("glWaitSemaphoreEXT");
 
     if(!self->eglExportDMABUFImageQueryMESA) {
         gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_egl_load failed: could not find eglExportDMABUFImageQueryMESA");

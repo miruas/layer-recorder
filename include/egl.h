@@ -185,6 +185,7 @@ typedef void (*FUNC_glGenSemaphoresEXT)(int n, unsigned int *semaphores);
 typedef void (*FUNC_glDeleteSemaphoresEXT)(int n, const unsigned int *semaphores);
 typedef void (*FUNC_glImportSemaphoreFdEXT)(unsigned int semaphore, unsigned int handleType, int fd);
 typedef void (*FUNC_glSignalSemaphoreEXT)(unsigned int semaphore, unsigned int numBufferBarriers, const unsigned int *buffers, unsigned int numTextureBarriers, const unsigned int *textures, const unsigned int *dstLayouts);
+typedef void (*FUNC_glWaitSemaphoreEXT)(unsigned int semaphore, unsigned int numBufferBarriers, const unsigned int *buffers, unsigned int numTextureBarriers, const unsigned int *textures, const unsigned int *srcLayouts);
 
 typedef enum {
     GSR_GL_CONTEXT_TYPE_EGL,
@@ -257,6 +258,7 @@ struct gsr_egl {
     FUNC_glDeleteSemaphoresEXT glDeleteSemaphoresEXT;
     FUNC_glImportSemaphoreFdEXT glImportSemaphoreFdEXT;
     FUNC_glSignalSemaphoreEXT glSignalSemaphoreEXT;
+    FUNC_glWaitSemaphoreEXT glWaitSemaphoreEXT;
 
     __GLXextFuncPtr (*glXGetProcAddress)(const unsigned char *procName);
     GLXFBConfig* (*glXChooseFBConfig)(Display *dpy, int screen, const int *attribList, int *nitems);

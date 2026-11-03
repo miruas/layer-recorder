@@ -57,9 +57,10 @@ typedef struct {
     bool fence_submitted;
     uint64_t submit_number;
 
-    /* GL->Vulkan semaphore (binary, exported to GL via GL_EXT_semaphore_fd) */
     VkSemaphore gl_ready_semaphore;
-    unsigned int gl_semaphore;
+    unsigned int gl_ready_gl_semaphore;
+    VkSemaphore copy_done_semaphore;
+    unsigned int copy_done_gl_semaphore;
 } gsr_vulkan_copy_slot;
 
 typedef struct {
@@ -83,6 +84,7 @@ typedef struct {
     gsr_vulkan_copy_slot copy_slots[MAX_COPY_SLOTS];
     int num_copy_slots;
     uint64_t num_submits;
+    gsr_vulkan_copy_slot *copy_slot_to_wait_for;
 } gsr_video_encoder_vulkan;
 
 static bool gsr_vk_funcs_load(gsr_vk_funcs *vk, PFN_vkGetInstanceProcAddr get_inst_proc, VkInstance inst, VkDevice dev) {
@@ -322,7 +324,7 @@ static bool create_exportable_image(
     return true;
 }
 
-static void create_gl_ready_semaphore(gsr_video_encoder_vulkan *self, VkDevice device, gsr_vulkan_copy_slot *slot) {
+static void create_semaphore_shared_with_gl(gsr_video_encoder_vulkan *self, VkSemaphore *semaphore, unsigned int *gl_semaphore) {
     VkExportSemaphoreCreateInfo exp_sem_info = {
         .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
         .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
@@ -331,25 +333,35 @@ static void create_gl_ready_semaphore(gsr_video_encoder_vulkan *self, VkDevice d
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
         .pNext = &exp_sem_info,
     };
-    if(self->vk.vkCreateSemaphore(device, &sem_info, NULL, &slot->gl_ready_semaphore) != VK_SUCCESS) {
-        slot->gl_ready_semaphore = VK_NULL_HANDLE;
+    if(self->vk.vkCreateSemaphore(self->vk_device, &sem_info, NULL, semaphore) != VK_SUCCESS) {
+        *semaphore = VK_NULL_HANDLE;
         return;
     }
 
     VkSemaphoreGetFdInfoKHR get_fd_info = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
-        .semaphore = slot->gl_ready_semaphore,
+        .semaphore = *semaphore,
         .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
     };
     int sem_fd = -1;
-    if(self->vk.vkGetSemaphoreFdKHR(device, &get_fd_info, &sem_fd) != VK_SUCCESS) {
-        self->vk.vkDestroySemaphore(device, slot->gl_ready_semaphore, NULL);
-        slot->gl_ready_semaphore = VK_NULL_HANDLE;
+    if(self->vk.vkGetSemaphoreFdKHR(self->vk_device, &get_fd_info, &sem_fd) != VK_SUCCESS) {
+        self->vk.vkDestroySemaphore(self->vk_device, *semaphore, NULL);
+        *semaphore = VK_NULL_HANDLE;
         return;
     }
 
-    self->params.egl->glGenSemaphoresEXT(1, &slot->gl_semaphore);
-    self->params.egl->glImportSemaphoreFdEXT(slot->gl_semaphore, GL_HANDLE_TYPE_OPAQUE_FD_EXT, sem_fd);
+    self->params.egl->glGenSemaphoresEXT(1, gl_semaphore);
+    self->params.egl->glImportSemaphoreFdEXT(*gl_semaphore, GL_HANDLE_TYPE_OPAQUE_FD_EXT, sem_fd);
+}
+
+static void destroy_semaphore_shared_with_gl(gsr_video_encoder_vulkan *self, VkSemaphore *semaphore, unsigned int *gl_semaphore) {
+    if(*gl_semaphore && self->params.egl->glDeleteSemaphoresEXT)
+        self->params.egl->glDeleteSemaphoresEXT(1, gl_semaphore);
+    *gl_semaphore = 0;
+
+    if(*semaphore)
+        self->vk.vkDestroySemaphore(self->vk_device, *semaphore, NULL);
+    *semaphore = VK_NULL_HANDLE;
 }
 
 static bool create_copy_slot(gsr_video_encoder_vulkan *self, gsr_vulkan_copy_slot *slot) {
@@ -374,8 +386,12 @@ static bool create_copy_slot(gsr_video_encoder_vulkan *self, gsr_vulkan_copy_slo
         return false;
     }
 
-    if(self->params.egl->glGenSemaphoresEXT && self->params.egl->glImportSemaphoreFdEXT && self->params.egl->glSignalSemaphoreEXT)
-        create_gl_ready_semaphore(self, self->vk_device, slot);
+    if(self->params.egl->glGenSemaphoresEXT && self->params.egl->glImportSemaphoreFdEXT) {
+        if(self->params.egl->glSignalSemaphoreEXT)
+            create_semaphore_shared_with_gl(self, &slot->gl_ready_semaphore, &slot->gl_ready_gl_semaphore);
+        if(self->params.egl->glWaitSemaphoreEXT)
+            create_semaphore_shared_with_gl(self, &slot->copy_done_semaphore, &slot->copy_done_gl_semaphore);
+    }
 
     return true;
 }
@@ -633,7 +649,7 @@ static void gsr_video_encoder_vulkan_copy_textures_to_frame(gsr_video_encoder *e
         /* GPU-side GL->Vulkan sync: signal the semaphore from GL, then flush (no CPU stall) */
         unsigned int gl_textures[2] = { self->target_textures[0], self->target_textures[1] };
         unsigned int dst_layouts[2] = { GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT };
-        self->params.egl->glSignalSemaphoreEXT(slot->gl_semaphore, 0, NULL, 2, gl_textures, dst_layouts);
+        self->params.egl->glSignalSemaphoreEXT(slot->gl_ready_gl_semaphore, 0, NULL, 2, gl_textures, dst_layouts);
         self->params.egl->glFlush();
     } else {
         /* Fallback: CPU stall to ensure GL has finished */
@@ -874,23 +890,31 @@ static void gsr_video_encoder_vulkan_copy_textures_to_frame(gsr_video_encoder *e
         ++num_wait_semaphores;
     }
 
-    VkSemaphore signal_semaphores[2];
-    uint64_t signal_values[2];
+    VkSemaphore signal_semaphores[3];
+    uint64_t signal_values[3];
+    int num_signal_semaphores = 0;
     for(int i = 0; i < num_frame_semaphores; i++) {
         wait_semaphores[num_wait_semaphores] = vk_frame->sem[i];
         wait_values[num_wait_semaphores] = vk_frame->sem_value[i];
         wait_stages[num_wait_semaphores] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
         ++num_wait_semaphores;
 
-        signal_semaphores[i] = vk_frame->sem[i];
-        signal_values[i] = vk_frame->sem_value[i] + 1;
+        signal_semaphores[num_signal_semaphores] = vk_frame->sem[i];
+        signal_values[num_signal_semaphores] = vk_frame->sem_value[i] + 1;
+        ++num_signal_semaphores;
+    }
+
+    if(slot->copy_done_semaphore != VK_NULL_HANDLE) {
+        signal_semaphores[num_signal_semaphores] = slot->copy_done_semaphore;
+        signal_values[num_signal_semaphores] = 0;
+        ++num_signal_semaphores;
     }
 
     VkTimelineSemaphoreSubmitInfo timeline_info = {
         .sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
         .waitSemaphoreValueCount   = (uint32_t)num_wait_semaphores,
         .pWaitSemaphoreValues      = wait_values,
-        .signalSemaphoreValueCount = (uint32_t)num_frame_semaphores,
+        .signalSemaphoreValueCount = (uint32_t)num_signal_semaphores,
         .pSignalSemaphoreValues    = signal_values,
     };
 
@@ -902,7 +926,7 @@ static void gsr_video_encoder_vulkan_copy_textures_to_frame(gsr_video_encoder *e
         .pWaitDstStageMask    = wait_stages,
         .commandBufferCount   = 1,
         .pCommandBuffers      = &command_buffer,
-        .signalSemaphoreCount = (uint32_t)num_frame_semaphores,
+        .signalSemaphoreCount = (uint32_t)num_signal_semaphores,
         .pSignalSemaphores    = signal_semaphores,
     };
 
@@ -914,11 +938,30 @@ static void gsr_video_encoder_vulkan_copy_textures_to_frame(gsr_video_encoder *e
         }
         slot->fence_submitted = true;
         slot->submit_number = self->num_submits++;
+        self->copy_slot_to_wait_for = slot;
     } else {
         gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_video_encoder_vulkan_copy_textures_to_frame: vkQueueSubmit failed, error: %d", submit_result);
     }
 
     vulkan_frames_context->unlock_frame(hw_frames_context, vk_frame);
+}
+
+static void gsr_video_encoder_vulkan_prepare_frame(gsr_video_encoder *encoder, AVFrame *frame, gsr_color_conversion *color_conversion) {
+    (void)frame;
+    (void)color_conversion;
+    gsr_video_encoder_vulkan *self = encoder->priv;
+    gsr_vulkan_copy_slot *slot = self->copy_slot_to_wait_for;
+    if(!slot)
+        return;
+
+    self->copy_slot_to_wait_for = NULL;
+    if(slot->copy_done_semaphore != VK_NULL_HANDLE) {
+        unsigned int gl_textures[2] = { self->target_textures[0], self->target_textures[1] };
+        unsigned int src_layouts[2] = { GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT };
+        self->params.egl->glWaitSemaphoreEXT(slot->copy_done_gl_semaphore, 0, NULL, 2, gl_textures, src_layouts);
+    } else {
+        self->vk.vkWaitForFences(self->vk_device, 1, &slot->fence, VK_TRUE, UINT64_MAX);
+    }
 }
 
 void gsr_video_encoder_vulkan_stop(gsr_video_encoder_vulkan *self, AVCodecContext *video_codec_context) {
@@ -934,10 +977,8 @@ void gsr_video_encoder_vulkan_stop(gsr_video_encoder_vulkan *self, AVCodecContex
                 self->vk.vkWaitForFences(self->vk_device, 1, &slot->fence, VK_TRUE, UINT64_MAX);
                 slot->fence_submitted = false;
             }
-            if(slot->gl_semaphore && self->params.egl->glDeleteSemaphoresEXT)
-                self->params.egl->glDeleteSemaphoresEXT(1, &slot->gl_semaphore);
-            if(slot->gl_ready_semaphore)
-                self->vk.vkDestroySemaphore(self->vk_device, slot->gl_ready_semaphore, NULL);
+            destroy_semaphore_shared_with_gl(self, &slot->gl_ready_semaphore, &slot->gl_ready_gl_semaphore);
+            destroy_semaphore_shared_with_gl(self, &slot->copy_done_semaphore, &slot->copy_done_gl_semaphore);
             if(slot->fence)
                 self->vk.vkDestroyFence(self->vk_device, slot->fence, NULL);
         }
@@ -989,6 +1030,7 @@ gsr_video_encoder* gsr_video_encoder_vulkan_create(const gsr_video_encoder_vulka
 
     *encoder = (gsr_video_encoder) {
         .start = gsr_video_encoder_vulkan_start,
+        .prepare_frame = gsr_video_encoder_vulkan_prepare_frame,
         .copy_textures_to_frame = gsr_video_encoder_vulkan_copy_textures_to_frame,
         .get_textures = gsr_video_encoder_vulkan_get_textures,
         .destroy = gsr_video_encoder_vulkan_destroy,
