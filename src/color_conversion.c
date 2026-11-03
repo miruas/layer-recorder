@@ -25,34 +25,6 @@
 #define GRAPHICS_SHADER_INDEX_RGB_HDR              16
 #define GRAPHICS_SHADER_INDEX_RGB_HDR_EXTERNAL     17
 
-/* https://en.wikipedia.org/wiki/YCbCr, see study/color_space_transform_matrix.png */
-
-/* ITU-R BT2020, full */
-/* https://www.itu.int/dms_pubrec/itu-r/rec/bt/R-REC-BT.2020-2-201510-I!!PDF-E.pdf */
-#define RGB_TO_P010_FULL "const mat4 RGBtoYUV = mat4(0.262700, -0.139630,  0.500000, 0.000000,\n" \
-                         "                           0.678000, -0.360370, -0.459786, 0.000000,\n" \
-                         "                           0.059300,  0.500000, -0.040214, 0.000000,\n" \
-                         "                           0.000000,  0.500000,  0.500000, 1.000000);\n"
-
-/* ITU-R BT2020, limited (full multiplied by (235-16)/255, adding 16/255 to luma) */
-#define RGB_TO_P010_LIMITED "const mat4 RGBtoYUV = mat4(0.225613, -0.119918,  0.429412, 0.000000,\n" \
-                            "                           0.582282, -0.309494, -0.394875, 0.000000,\n" \
-                            "                           0.050928,  0.429412, -0.034537, 0.000000,\n" \
-                            "                           0.062745,  0.500000,  0.500000, 1.000000);\n"
-
-/* ITU-R BT709, full, custom values: 0.2110 0.7110 0.0710 */
-/* https://www.itu.int/dms_pubrec/itu-r/rec/bt/R-REC-BT.709-6-201506-I!!PDF-E.pdf */
-#define RGB_TO_NV12_FULL "const mat4 RGBtoYUV = mat4(0.211000, -0.113563,  0.500000, 0.000000,\n" \
-                         "                           0.711000, -0.382670, -0.450570, 0.000000,\n" \
-                         "                           0.071000,  0.500000, -0.044994, 0.000000,\n" \
-                         "                           0.000000,  0.500000,  0.500000, 1.000000);\n"
-
-/* ITU-R BT709, limited, custom values: 0.2100 0.7100 0.0700 (full multiplied by (235-16)/255, adding 16/255 to luma) */
-#define RGB_TO_NV12_LIMITED "const mat4 RGBtoYUV = mat4(0.180353, -0.096964,  0.429412, 0.000000,\n" \
-                            "                           0.609765, -0.327830, -0.385927, 0.000000,\n" \
-                            "                           0.060118,  0.429412, -0.038049, 0.000000,\n" \
-                            "                           0.062745,  0.500000,  0.500000, 1.000000);\n"
-
 #define SDR_WHITE_LUMINANCE_DEFAULT 203.0f /* ITU-R BT.2408 */
 
 /* SMPTE ST 2084 (pq) to sdr with the ITU-R BT.2390 EETF */
@@ -146,36 +118,73 @@
     "  if(hdr_source_max_pq > 0.0)                                                   \n" \
     "    pixel.rgb = tone_map_hdr_to_sdr(pixel.rgb);                                 \n"
 
-static const char* color_format_range_get_transform_matrix(gsr_destination_color color_format, gsr_color_range color_range) {
+static int destination_color_get_bit_depth(gsr_destination_color color_format) {
     switch(color_format) {
-        case GSR_DESTINATION_COLOR_NV12: {
-            switch(color_range) {
-                case GSR_COLOR_RANGE_LIMITED:
-                    return RGB_TO_NV12_LIMITED;
-                case GSR_COLOR_RANGE_FULL:
-                    return RGB_TO_NV12_FULL;
-            }
-            break;
-        }
-        case GSR_DESTINATION_COLOR_P010: {
-            switch(color_range) {
-                case GSR_COLOR_RANGE_LIMITED:
-                    return RGB_TO_P010_LIMITED;
-                case GSR_COLOR_RANGE_FULL:
-                    return RGB_TO_P010_FULL;
-            }
-            break;
-        }
-        case GSR_DESTINATION_COLOR_RGB:
-            return "";
+        case GSR_DESTINATION_COLOR_P010:
+            return 10;
         default:
-            return NULL;
+            return 8;
     }
-    return NULL;
 }
 
-static int load_graphics_shader_y(gsr_shader *shader, gsr_egl *egl, gsr_color_graphics_uniforms *uniforms, gsr_destination_color color_format, gsr_color_range color_range, bool external_texture, bool hdr) {
-    const char *color_transform_matrix = color_format_range_get_transform_matrix(color_format, color_range);
+static int destination_color_get_texture_bits(gsr_destination_color color_format) {
+    switch(color_format) {
+        case GSR_DESTINATION_COLOR_P010:
+            return 16;
+        default:
+            return 8;
+    }
+}
+
+/* ITU-R BT.709-6 item 3.4 and ITU-R BT.2020-2 table 5 for limited range, ITU-T H.273 for full range */
+static void get_rgb_to_yuv_matrix(gsr_yuv_matrix yuv_matrix, gsr_color_range color_range, int bit_depth, int texture_bits, float *column_major_matrix) {
+    const float kr = yuv_matrix == GSR_YUV_MATRIX_BT2020 ? 0.2627f : 0.2126f;
+    const float kb = yuv_matrix == GSR_YUV_MATRIX_BT2020 ? 0.0593f : 0.0722f;
+    const float kg = 1.0f - kr - kb;
+    const float cb_scale = 0.5f / (1.0f - kb);
+    const float cr_scale = 0.5f / (1.0f - kr);
+
+    const float code_scale = (float)(1 << (bit_depth - 8));
+    const float max_code = (float)((1 << bit_depth) - 1);
+    const bool limited = color_range == GSR_COLOR_RANGE_LIMITED;
+    const float luma_range = limited ? 219.0f * code_scale : max_code;
+    const float luma_offset = limited ? 16.0f * code_scale : 0.0f;
+    const float chroma_range = limited ? 224.0f * code_scale : max_code;
+    const float chroma_offset = 128.0f * code_scale;
+    const int unused_low_bits = texture_bits - bit_depth;
+    /* Values are stored in the most significant bits of the texture and encoders discard the unused low bits, so half a code is added to round instead of truncate */
+    const float rounding = unused_low_bits > 0 ? 0.5f : 0.0f;
+    const float code_to_texture_value = (float)(1 << unused_low_bits) / (float)((1 << texture_bits) - 1);
+
+    const float rows[3][4] = {
+        { kr * luma_range,                 kg * luma_range,                 kb * luma_range,                 luma_offset + rounding   },
+        { -kr * cb_scale * chroma_range,   -kg * cb_scale * chroma_range,   0.5f * chroma_range,             chroma_offset + rounding },
+        { 0.5f * chroma_range,             -kg * cr_scale * chroma_range,   -kb * cr_scale * chroma_range,   chroma_offset + rounding },
+    };
+
+    for(int column = 0; column < 4; ++column) {
+        for(int row = 0; row < 3; ++row) {
+            column_major_matrix[column*4 + row] = rows[row][column] * code_to_texture_value;
+        }
+        column_major_matrix[column*4 + 3] = column == 3 ? 1.0f : 0.0f;
+    }
+}
+
+static void rgb_to_yuv_matrix_to_glsl(const float *m, char *buffer, size_t buffer_size) {
+    snprintf(buffer, buffer_size,
+        "const mat4 RGBtoYUV = mat4(%.9f, %.9f, %.9f, %.9f,\n"
+        "                           %.9f, %.9f, %.9f, %.9f,\n"
+        "                           %.9f, %.9f, %.9f, %.9f,\n"
+        "                           %.9f, %.9f, %.9f, %.9f);\n",
+        m[0],  m[1],  m[2],  m[3],
+        m[4],  m[5],  m[6],  m[7],
+        m[8],  m[9],  m[10], m[11],
+        m[12], m[13], m[14], m[15]);
+}
+
+static int load_graphics_shader_y(gsr_shader *shader, gsr_egl *egl, gsr_color_graphics_uniforms *uniforms, const float *rgb_to_yuv_matrix, bool external_texture, bool hdr) {
+    char color_transform_matrix[512];
+    rgb_to_yuv_matrix_to_glsl(rgb_to_yuv_matrix, color_transform_matrix, sizeof(color_transform_matrix));
 
     char vertex_shader[2048];
     snprintf(vertex_shader, sizeof(vertex_shader),
@@ -192,13 +201,12 @@ static int load_graphics_shader_y(gsr_shader *shader, gsr_egl *egl, gsr_color_gr
         "  gl_Position = vec4(offset.x, offset.y, 0.0, 0.0) + vec4(pos.x, pos.y, 0.0, 1.0);    \n"
         "}                                                 \n");
 
-    const char *brightness = color_format == GSR_DESTINATION_COLOR_NV12 ? "1.007049345" : "1.0";
     char main_code[1024];
     snprintf(main_code, sizeof(main_code),
         "  vec4 pixel = texture(tex1, texcoords_out);                                    \n"
         "%s"
-        "  FragColor.x = (RGBtoYUV * vec4(pixel.rgb, 1.0)).x*%s;                         \n"
-        "  FragColor.w = pixel.a;                                                        \n", hdr ? APPLY_HDR_TO_SDR_TONE_MAPPING : "", brightness);
+        "  FragColor.x = (RGBtoYUV * vec4(pixel.rgb, 1.0)).x;                            \n"
+        "  FragColor.w = pixel.a;                                                        \n", hdr ? APPLY_HDR_TO_SDR_TONE_MAPPING : "");
 
     char fragment_shader[16384];
     if(external_texture) {
@@ -251,8 +259,9 @@ static int load_graphics_shader_y(gsr_shader *shader, gsr_egl *egl, gsr_color_gr
     return 0;
 }
 
-static unsigned int load_graphics_shader_uv(gsr_shader *shader, gsr_egl *egl, gsr_color_graphics_uniforms *uniforms, gsr_destination_color color_format, gsr_color_range color_range, bool external_texture, bool hdr) {
-    const char *color_transform_matrix = color_format_range_get_transform_matrix(color_format, color_range);
+static unsigned int load_graphics_shader_uv(gsr_shader *shader, gsr_egl *egl, gsr_color_graphics_uniforms *uniforms, const float *rgb_to_yuv_matrix, bool external_texture, bool hdr) {
+    char color_transform_matrix[512];
+    rgb_to_yuv_matrix_to_glsl(rgb_to_yuv_matrix, color_transform_matrix, sizeof(color_transform_matrix));
 
     char vertex_shader[2048];
     snprintf(vertex_shader, sizeof(vertex_shader),
@@ -620,23 +629,23 @@ static bool gsr_color_conversion_load_hdr_graphics_shaders(gsr_color_conversion 
     switch(self->params.destination_color) {
         case GSR_DESTINATION_COLOR_NV12:
         case GSR_DESTINATION_COLOR_P010: {
-            if(load_graphics_shader_y(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_Y_HDR], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_Y_HDR], self->params.destination_color, self->params.color_range, false, true) != 0) {
+            if(load_graphics_shader_y(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_Y_HDR], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_Y_HDR], self->rgb_to_yuv_matrix, false, true) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_load_hdr_graphics_shaders: failed to load Y graphics shader (hdr)");
                 return false;
             }
 
-            if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV_HDR], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV_HDR], self->params.destination_color, self->params.color_range, false, true) != 0) {
+            if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV_HDR], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV_HDR], self->rgb_to_yuv_matrix, false, true) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_load_hdr_graphics_shaders: failed to load UV graphics shader (hdr)");
                 return false;
             }
 
             if(self->params.load_external_image_shader) {
-                if(load_graphics_shader_y(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_Y_HDR_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_Y_HDR_EXTERNAL], self->params.destination_color, self->params.color_range, true, true) != 0) {
+                if(load_graphics_shader_y(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_Y_HDR_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_Y_HDR_EXTERNAL], self->rgb_to_yuv_matrix, true, true) != 0) {
                     gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_load_hdr_graphics_shaders: failed to load Y graphics shader (hdr, external)");
                     return false;
                 }
 
-                if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV_HDR_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV_HDR_EXTERNAL], self->params.destination_color, self->params.color_range, true, true) != 0) {
+                if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV_HDR_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV_HDR_EXTERNAL], self->rgb_to_yuv_matrix, true, true) != 0) {
                     gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_load_hdr_graphics_shaders: failed to load UV graphics shader (hdr, external)");
                     return false;
                 }
@@ -731,12 +740,12 @@ static bool gsr_color_conversion_load_graphics_shaders(gsr_color_conversion *sel
     switch(self->params.destination_color) {
         case GSR_DESTINATION_COLOR_NV12:
         case GSR_DESTINATION_COLOR_P010: {
-            if(load_graphics_shader_y(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_Y], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_Y], self->params.destination_color, self->params.color_range, false, false) != 0) {
+            if(load_graphics_shader_y(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_Y], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_Y], self->rgb_to_yuv_matrix, false, false) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: failed to load Y graphics shader");
                 return false;
             }
 
-            if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV], self->params.destination_color, self->params.color_range, false, false) != 0) {
+            if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV], self->rgb_to_yuv_matrix, false, false) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: failed to load UV graphics shader");
                 return false;
             }
@@ -772,12 +781,12 @@ static bool gsr_color_conversion_load_external_graphics_shaders(gsr_color_conver
     switch(self->params.destination_color) {
         case GSR_DESTINATION_COLOR_NV12:
         case GSR_DESTINATION_COLOR_P010: {
-            if(load_graphics_shader_y(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_Y_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_Y_EXTERNAL], self->params.destination_color, self->params.color_range, true, false) != 0) {
+            if(load_graphics_shader_y(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_Y_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_Y_EXTERNAL], self->rgb_to_yuv_matrix, true, false) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: failed to load Y graphics shader (external)");
                 return false;
             }
 
-            if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV_EXTERNAL], self->params.destination_color, self->params.color_range, true, false) != 0) {
+            if(load_graphics_shader_uv(&self->graphics_shaders[GRAPHICS_SHADER_INDEX_UV_EXTERNAL], self->params.egl, &self->graphics_uniforms[GRAPHICS_SHADER_INDEX_UV_EXTERNAL], self->rgb_to_yuv_matrix, true, false) != 0) {
                 gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_color_conversion_init: failed to load UV graphics shader (external)");
                 return false;
             }
@@ -833,6 +842,8 @@ int gsr_color_conversion_init(gsr_color_conversion *self, const gsr_color_conver
             break;
         }
     }
+
+    get_rgb_to_yuv_matrix(self->params.yuv_matrix, self->params.color_range, destination_color_get_bit_depth(self->params.destination_color), destination_color_get_texture_bits(self->params.destination_color), self->rgb_to_yuv_matrix);
 
     if(!gsr_color_conversion_load_graphics_shaders(self))
         goto err;
@@ -1178,17 +1189,12 @@ void gsr_color_conversion_clear(gsr_color_conversion *self) {
     switch(self->params.destination_color) {
         case GSR_DESTINATION_COLOR_NV12:
         case GSR_DESTINATION_COLOR_P010: {
-            color2[0] = 0.5f;
-            color2[1] = 0.5f;
-            color2[2] = 0.0f;
-            color2[3] = 1.0f;
+            color1[0] = self->rgb_to_yuv_matrix[12];
+            color2[0] = self->rgb_to_yuv_matrix[13];
+            color2[1] = self->rgb_to_yuv_matrix[14];
             break;
         }
         case GSR_DESTINATION_COLOR_RGB: {
-            color2[0] = 0.0f;
-            color2[1] = 0.0f;
-            color2[2] = 0.0f;
-            color2[3] = 1.0f;
             break;
         }
     }

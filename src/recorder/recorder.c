@@ -276,6 +276,7 @@ static int recorder_setup_video_encoder(gsr_recorder *self) {
     gsr_color_conversion_params color_conversion_params;
     memset(&color_conversion_params, 0, sizeof(color_conversion_params));
     color_conversion_params.color_range = self->settings.color_range;
+    color_conversion_params.yuv_matrix = self->video_codec_context->colorspace == AVCOL_SPC_BT2020_NCL ? GSR_YUV_MATRIX_BT2020 : GSR_YUV_MATRIX_BT709;
     color_conversion_params.egl = self->egl;
     color_conversion_params.load_external_image_shader = gsr_video_sources_uses_external_image(self->video_sources);
     gsr_video_encoder_get_textures(self->video_encoder, color_conversion_params.destination_textures, color_conversion_params.destination_textures_size, &color_conversion_params.num_destination_textures, &color_conversion_params.destination_color);

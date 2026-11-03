@@ -22,10 +22,15 @@ typedef enum {
 } gsr_source_color;
 
 typedef enum {
-    GSR_DESTINATION_COLOR_NV12, /* YUV420, BT709, 8-bit */
-    GSR_DESTINATION_COLOR_P010, /* YUV420, BT2020, 10-bit */
+    GSR_DESTINATION_COLOR_NV12, /* YUV420, 8-bit */
+    GSR_DESTINATION_COLOR_P010, /* YUV420, 10-bit */
     GSR_DESTINATION_COLOR_RGB
 } gsr_destination_color;
+
+typedef enum {
+    GSR_YUV_MATRIX_BT709,
+    GSR_YUV_MATRIX_BT2020
+} gsr_yuv_matrix;
 
 typedef enum {
     GSR_ROT_0,
@@ -61,11 +66,13 @@ typedef struct {
     int num_destination_textures;
 
     gsr_color_range color_range;
+    gsr_yuv_matrix yuv_matrix;
     bool load_external_image_shader;
 } gsr_color_conversion_params;
 
 typedef struct {
     gsr_color_conversion_params params;
+    float rgb_to_yuv_matrix[16];
 
     gsr_color_graphics_uniforms graphics_uniforms[GSR_COLOR_CONVERSION_MAX_GRAPHICS_SHADERS];
     gsr_shader graphics_shaders[GSR_COLOR_CONVERSION_MAX_GRAPHICS_SHADERS];
