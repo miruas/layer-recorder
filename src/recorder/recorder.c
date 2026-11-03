@@ -613,8 +613,6 @@ static void recorder_capture_and_encode_frame(gsr_recorder *self, bool damaged) 
 
     if(damaged && num_missed_frames >= 1 && !self->paused) {
         gsr_video_encoder_prepare_frame(self->video_encoder, self->video_frame, &self->color_conversion);
-        // TODO: Dont do this if no damage?
-        self->egl->glClear(0);
 
         gsr_damage_clear(&self->damage);
         gsr_plugins_clear_damage(&self->plugins);

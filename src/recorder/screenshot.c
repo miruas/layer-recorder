@@ -120,7 +120,6 @@ int gsr_screenshot_take(const gsr_screenshot_params *params) {
     gsr_color_conversion *output_color_conversion = plugins.num_plugins > 0 ? &plugins.color_conversion : &color_conversion;
 
     bool should_stop_error = false;
-    egl->glClear(0);
 
     while(atomic_load(running)) {
         while(gsr_window_process_event(window)) {
