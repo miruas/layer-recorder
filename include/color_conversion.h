@@ -48,9 +48,8 @@ typedef enum {
 typedef struct {
     int rotation_matrix;
     int offset;
-    int hdr_source_max_pq;
-    int hdr_sdr_white_pq;
     int hdr_sdr_white_scale;
+    int hdr_relative_peak_luminance;
     int gamma_lut_enabled;
     int color_matrix_transfer;
     int color_matrix;
@@ -83,9 +82,8 @@ typedef struct {
     unsigned int vertex_buffer_object_id;
 
     bool schedule_clear;
-    float hdr_source_max_pq;
-    float hdr_sdr_white_pq;
     float hdr_sdr_white_scale;
+    float hdr_relative_peak_luminance;
     unsigned int gamma_lut_texture_id;
     bool gamma_lut_apply;
     int color_matrix_transfer;
