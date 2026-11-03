@@ -2,12 +2,15 @@
 #include "../../../include/log.h"
 #include "../../../include/utils.h"
 #include "../../../include/egl.h"
+#include "../../../include/ffmpeg_utils.h"
 
 #include <libavcodec/avcodec.h>
 #define VK_NO_PROTOTYPES
 #include <libavutil/hwcontext_vulkan.h>
 
 #include <vulkan/vulkan_core.h>
+
+#include <string.h>
 
 #define GL_HANDLE_TYPE_OPAQUE_FD_EXT       0x9586
 #define GL_TEXTURE_TILING_EXT              0x9580
@@ -36,6 +39,7 @@ typedef struct {
     PFN_vkDestroyFence                       vkDestroyFence;
     PFN_vkResetFences                        vkResetFences;
     PFN_vkWaitForFences                      vkWaitForFences;
+    PFN_vkGetFenceStatus                     vkGetFenceStatus;
     PFN_vkGetDeviceQueue                     vkGetDeviceQueue;
     PFN_vkGetDeviceQueue2                    vkGetDeviceQueue2;
     PFN_vkQueueSubmit                        vkQueueSubmit;
@@ -44,6 +48,19 @@ typedef struct {
     PFN_vkDestroySemaphore                   vkDestroySemaphore;
     PFN_vkGetSemaphoreFdKHR                  vkGetSemaphoreFdKHR;
 } gsr_vk_funcs;
+
+#define MAX_COPY_SLOTS 32
+
+typedef struct {
+    VkCommandBuffer command_buffer;
+    VkFence fence;
+    bool fence_submitted;
+    uint64_t submit_number;
+
+    /* GL->Vulkan semaphore (binary, exported to GL via GL_EXT_semaphore_fd) */
+    VkSemaphore gl_ready_semaphore;
+    unsigned int gl_semaphore;
+} gsr_vulkan_copy_slot;
 
 typedef struct {
     gsr_video_encoder_vulkan_params params;
@@ -63,13 +80,9 @@ typedef struct {
 
     /* Vulkan command infrastructure for copying to encoder frame */
     VkCommandPool command_pool;
-    VkCommandBuffer command_buffer;
-    VkFence fence;
-    bool fence_submitted; /* true if the fence was submitted and not yet waited on */
-
-    /* GL→Vulkan semaphore (binary, exported to GL via GL_EXT_semaphore_fd) */
-    VkSemaphore gl_ready_semaphore;
-    unsigned int gl_semaphore;
+    gsr_vulkan_copy_slot copy_slots[MAX_COPY_SLOTS];
+    int num_copy_slots;
+    uint64_t num_submits;
 } gsr_video_encoder_vulkan;
 
 static bool gsr_vk_funcs_load(gsr_vk_funcs *vk, PFN_vkGetInstanceProcAddr get_inst_proc, VkInstance inst, VkDevice dev) {
@@ -101,6 +114,7 @@ static bool gsr_vk_funcs_load(gsr_vk_funcs *vk, PFN_vkGetInstanceProcAddr get_in
     LOAD_DEV(vkDestroyFence)
     LOAD_DEV(vkResetFences)
     LOAD_DEV(vkWaitForFences)
+    LOAD_DEV(vkGetFenceStatus)
     LOAD_DEV(vkGetDeviceQueue)
     LOAD_DEV(vkGetDeviceQueue2)
     LOAD_DEV(vkQueueSubmit)
@@ -308,6 +322,99 @@ static bool create_exportable_image(
     return true;
 }
 
+static void create_gl_ready_semaphore(gsr_video_encoder_vulkan *self, VkDevice device, gsr_vulkan_copy_slot *slot) {
+    VkExportSemaphoreCreateInfo exp_sem_info = {
+        .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
+        .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
+    };
+    VkSemaphoreCreateInfo sem_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        .pNext = &exp_sem_info,
+    };
+    if(self->vk.vkCreateSemaphore(device, &sem_info, NULL, &slot->gl_ready_semaphore) != VK_SUCCESS) {
+        slot->gl_ready_semaphore = VK_NULL_HANDLE;
+        return;
+    }
+
+    VkSemaphoreGetFdInfoKHR get_fd_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
+        .semaphore = slot->gl_ready_semaphore,
+        .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
+    };
+    int sem_fd = -1;
+    if(self->vk.vkGetSemaphoreFdKHR(device, &get_fd_info, &sem_fd) != VK_SUCCESS) {
+        self->vk.vkDestroySemaphore(device, slot->gl_ready_semaphore, NULL);
+        slot->gl_ready_semaphore = VK_NULL_HANDLE;
+        return;
+    }
+
+    self->params.egl->glGenSemaphoresEXT(1, &slot->gl_semaphore);
+    self->params.egl->glImportSemaphoreFdEXT(slot->gl_semaphore, GL_HANDLE_TYPE_OPAQUE_FD_EXT, sem_fd);
+}
+
+static bool create_copy_slot(gsr_video_encoder_vulkan *self, gsr_vulkan_copy_slot *slot) {
+    memset(slot, 0, sizeof(*slot));
+
+    VkCommandBufferAllocateInfo cb_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = self->command_pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    if(self->vk.vkAllocateCommandBuffers(self->vk_device, &cb_alloc_info, &slot->command_buffer) != VK_SUCCESS) {
+        gsr_log(GSR_LOG_LEVEL_ERROR, "create_copy_slot: vkAllocateCommandBuffers failed");
+        return false;
+    }
+
+    VkFenceCreateInfo fence_info = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+    };
+    if(self->vk.vkCreateFence(self->vk_device, &fence_info, NULL, &slot->fence) != VK_SUCCESS) {
+        gsr_log(GSR_LOG_LEVEL_ERROR, "create_copy_slot: vkCreateFence failed");
+        return false;
+    }
+
+    if(self->params.egl->glGenSemaphoresEXT && self->params.egl->glImportSemaphoreFdEXT && self->params.egl->glSignalSemaphoreEXT)
+        create_gl_ready_semaphore(self, self->vk_device, slot);
+
+    return true;
+}
+
+/*
+    Copies are not waited on because that lowers the recording framerate when the gpu is busy (for example with a heavy game).
+    A new copy slot is created when all of them are in use, and only when the maximum number of slots are in use is the oldest copy waited on.
+*/
+static gsr_vulkan_copy_slot* get_free_copy_slot(gsr_video_encoder_vulkan *self) {
+    for(int i = 0; i < self->num_copy_slots; ++i) {
+        gsr_vulkan_copy_slot *slot = &self->copy_slots[i];
+        if(!slot->fence_submitted)
+            return slot;
+
+        if(self->vk.vkGetFenceStatus(self->vk_device, slot->fence) == VK_SUCCESS) {
+            slot->fence_submitted = false;
+            return slot;
+        }
+    }
+
+    if(self->num_copy_slots < MAX_COPY_SLOTS) {
+        gsr_vulkan_copy_slot *slot = &self->copy_slots[self->num_copy_slots];
+        if(create_copy_slot(self, slot)) {
+            ++self->num_copy_slots;
+            return slot;
+        }
+    }
+
+    gsr_vulkan_copy_slot *oldest_slot = &self->copy_slots[0];
+    for(int i = 1; i < self->num_copy_slots; ++i) {
+        if(self->copy_slots[i].submit_number < oldest_slot->submit_number)
+            oldest_slot = &self->copy_slots[i];
+    }
+
+    self->vk.vkWaitForFences(self->vk_device, 1, &oldest_slot->fence, VK_TRUE, UINT64_MAX);
+    oldest_slot->fence_submitted = false;
+    return oldest_slot;
+}
+
 static bool gsr_video_encoder_vulkan_setup_textures(gsr_video_encoder_vulkan *self, AVCodecContext *video_codec_context, AVFrame *frame) {
     const int res = av_hwframe_get_buffer(video_codec_context->hw_frames_ctx, frame, 0);
     if(res < 0) {
@@ -401,24 +508,9 @@ static bool gsr_video_encoder_vulkan_setup_textures(gsr_video_encoder_vulkan *se
         return false;
     }
 
-    VkCommandBufferAllocateInfo cb_alloc_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool = self->command_pool,
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
-    };
-    if(self->vk.vkAllocateCommandBuffers(vv->act_dev, &cb_alloc_info, &self->command_buffer) != VK_SUCCESS) {
-        gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_video_encoder_vulkan_setup_textures: vkAllocateCommandBuffers failed");
+    if(!create_copy_slot(self, &self->copy_slots[0]))
         return false;
-    }
-
-    VkFenceCreateInfo fence_info = {
-        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-    };
-    if(self->vk.vkCreateFence(vv->act_dev, &fence_info, NULL, &self->fence) != VK_SUCCESS) {
-        gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_video_encoder_vulkan_setup_textures: vkCreateFence failed");
-        return false;
-    }
+    self->num_copy_slots = 1;
 
     /*
         The queues have to be retrieved with vkGetDeviceQueue2 because vkGetDeviceQueue only works for queues that
@@ -437,12 +529,13 @@ static bool gsr_video_encoder_vulkan_setup_textures(gsr_video_encoder_vulkan *se
         return false;
     }
 
-    /* Transition export images UNDEFINED → GENERAL so GL can use them */
+    /* Transition export images UNDEFINED -> GENERAL so GL can use them */
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
-    self->vk.vkBeginCommandBuffer(self->command_buffer, &begin_info);
+    gsr_vulkan_copy_slot *init_slot = &self->copy_slots[0];
+    self->vk.vkBeginCommandBuffer(init_slot->command_buffer, &begin_info);
 
     VkImageMemoryBarrier init_barriers[2];
     for(int i = 0; i < 2; i++) {
@@ -462,48 +555,21 @@ static bool gsr_video_encoder_vulkan_setup_textures(gsr_video_encoder_vulkan *se
             },
         };
     }
-    self->vk.vkCmdPipelineBarrier(self->command_buffer,
+    self->vk.vkCmdPipelineBarrier(init_slot->command_buffer,
         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
         0, 0, NULL, 0, NULL, 2, init_barriers);
 
-    self->vk.vkEndCommandBuffer(self->command_buffer);
+    self->vk.vkEndCommandBuffer(init_slot->command_buffer);
 
     VkSubmitInfo submit_info = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .commandBufferCount = 1,
-        .pCommandBuffers = &self->command_buffer,
+        .pCommandBuffers = &init_slot->command_buffer,
     };
-    self->vk.vkQueueSubmit(self->vk_queue, 1, &submit_info, self->fence);
-    self->vk.vkWaitForFences(vv->act_dev, 1, &self->fence, VK_TRUE, UINT64_MAX);
-    self->vk.vkResetFences(vv->act_dev, 1, &self->fence);
-    self->vk.vkResetCommandBuffer(self->command_buffer, 0);
-
-    /* Create GL→Vulkan sync semaphore (binary, exported via OPAQUE_FD) */
-    if(self->params.egl->glGenSemaphoresEXT && self->params.egl->glImportSemaphoreFdEXT) {
-        VkExportSemaphoreCreateInfo exp_sem_info = {
-            .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
-            .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
-        };
-        VkSemaphoreCreateInfo sem_info = {
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-            .pNext = &exp_sem_info,
-        };
-        if(self->vk.vkCreateSemaphore(vv->act_dev, &sem_info, NULL, &self->gl_ready_semaphore) == VK_SUCCESS) {
-            VkSemaphoreGetFdInfoKHR get_fd_info = {
-                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
-                .semaphore = self->gl_ready_semaphore,
-                .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
-            };
-            int sem_fd = -1;
-            if(self->vk.vkGetSemaphoreFdKHR(vv->act_dev, &get_fd_info, &sem_fd) == VK_SUCCESS) {
-                self->params.egl->glGenSemaphoresEXT(1, &self->gl_semaphore);
-                self->params.egl->glImportSemaphoreFdEXT(self->gl_semaphore, GL_HANDLE_TYPE_OPAQUE_FD_EXT, sem_fd);
-            } else {
-                self->vk.vkDestroySemaphore(vv->act_dev, self->gl_ready_semaphore, NULL);
-                self->gl_ready_semaphore = VK_NULL_HANDLE;
-            }
-        }
-    }
+    self->vk.vkQueueSubmit(self->vk_queue, 1, &submit_info, init_slot->fence);
+    self->vk.vkWaitForFences(vv->act_dev, 1, &init_slot->fence, VK_TRUE, UINT64_MAX);
+    self->vk.vkResetFences(vv->act_dev, 1, &init_slot->fence);
+    self->vk.vkResetCommandBuffer(init_slot->command_buffer, 0);
 
     return true;
 }
@@ -554,35 +620,39 @@ static bool gsr_video_encoder_vulkan_start(gsr_video_encoder *encoder, AVCodecCo
 static void gsr_video_encoder_vulkan_copy_textures_to_frame(gsr_video_encoder *encoder, AVFrame *frame, gsr_color_conversion *color_conversion) {
     (void)color_conversion;
     gsr_video_encoder_vulkan *self = encoder->priv;
+
+    /* This also makes the copy not wait for the encoder to finish reading the previous frame */
+    gsr_frame_replace_hw_buffer(frame);
     AVVkFrame *vk_frame = (AVVkFrame*)frame->data[0];
 
-    /* Wait for the previous frame's copy to finish before reusing the command buffer */
-    // if(self->fence_submitted) {
-    //     self->vk.vkWaitForFences(self->vk_device, 1, &self->fence, VK_TRUE, UINT64_MAX);
-         self->vk.vkResetFences(self->vk_device, 1, &self->fence);
-         self->fence_submitted = false;
-    // }
+    gsr_vulkan_copy_slot *slot = get_free_copy_slot(self);
+    self->vk.vkResetFences(self->vk_device, 1, &slot->fence);
+    VkCommandBuffer command_buffer = slot->command_buffer;
 
-    if(self->gl_ready_semaphore != VK_NULL_HANDLE && self->params.egl->glSignalSemaphoreEXT) {
-        /* GPU-side GL→Vulkan sync: signal the semaphore from GL, then flush (no CPU stall) */
+    if(slot->gl_ready_semaphore != VK_NULL_HANDLE) {
+        /* GPU-side GL->Vulkan sync: signal the semaphore from GL, then flush (no CPU stall) */
         unsigned int gl_textures[2] = { self->target_textures[0], self->target_textures[1] };
         unsigned int dst_layouts[2] = { GL_LAYOUT_GENERAL_EXT, GL_LAYOUT_GENERAL_EXT };
-        self->params.egl->glSignalSemaphoreEXT(self->gl_semaphore, 0, NULL, 2, gl_textures, dst_layouts);
+        self->params.egl->glSignalSemaphoreEXT(slot->gl_semaphore, 0, NULL, 2, gl_textures, dst_layouts);
         self->params.egl->glFlush();
     } else {
         /* Fallback: CPU stall to ensure GL has finished */
         self->params.egl->glFinish();
     }
 
-    self->vk.vkResetCommandBuffer(self->command_buffer, 0);
+    AVHWFramesContext *hw_frames_context = (AVHWFramesContext*)frame->hw_frames_ctx->data;
+    AVVulkanFramesContext *vulkan_frames_context = hw_frames_context->hwctx;
+    vulkan_frames_context->lock_frame(hw_frames_context, vk_frame);
+
+    self->vk.vkResetCommandBuffer(command_buffer, 0);
 
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
-    self->vk.vkBeginCommandBuffer(self->command_buffer, &begin_info);
+    self->vk.vkBeginCommandBuffer(command_buffer, &begin_info);
 
-    /* Transition export images: GENERAL → TRANSFER_SRC_OPTIMAL */
+    /* Transition export images: GENERAL -> TRANSFER_SRC_OPTIMAL */
     VkImageMemoryBarrier src_barriers[2];
     for(int i = 0; i < 2; i++) {
         src_barriers[i] = (VkImageMemoryBarrier){
@@ -601,7 +671,7 @@ static void gsr_video_encoder_vulkan_copy_textures_to_frame(gsr_video_encoder *e
             },
         };
     }
-    self->vk.vkCmdPipelineBarrier(self->command_buffer,
+    self->vk.vkCmdPipelineBarrier(command_buffer,
         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
         0, 0, NULL, 0, NULL, 2, src_barriers);
 
@@ -629,28 +699,28 @@ static void gsr_video_encoder_vulkan_copy_textures_to_frame(gsr_video_encoder *e
                 .layerCount = 1,
             },
         };
-        self->vk.vkCmdPipelineBarrier(self->command_buffer,
+        self->vk.vkCmdPipelineBarrier(command_buffer,
             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
             0, 0, NULL, 0, NULL, 1, &dst_barrier);
 
-        /* Copy Y plane: export_images[0] (R8/R16) → encoder img PLANE_0 */
+        /* Copy Y plane: export_images[0] (R8/R16) -> encoder img PLANE_0 */
         VkImageCopy copy_y = {
             .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
             .dstSubresource = { VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 0, 1 },
             .extent = { (uint32_t)self->texture_sizes[0].x, (uint32_t)self->texture_sizes[0].y, 1 },
         };
-        self->vk.vkCmdCopyImage(self->command_buffer,
+        self->vk.vkCmdCopyImage(command_buffer,
             self->export_images[0], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             vk_frame->img[0],       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             1, &copy_y);
 
-        /* Copy UV plane: export_images[1] (RG8/RG16) → encoder img PLANE_1 */
+        /* Copy UV plane: export_images[1] (RG8/RG16) -> encoder img PLANE_1 */
         VkImageCopy copy_uv = {
             .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
             .dstSubresource = { VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 0, 1 },
             .extent = { (uint32_t)self->texture_sizes[1].x, (uint32_t)self->texture_sizes[1].y, 1 },
         };
-        self->vk.vkCmdCopyImage(self->command_buffer,
+        self->vk.vkCmdCopyImage(command_buffer,
             self->export_images[1], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             vk_frame->img[0],       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             1, &copy_uv);
@@ -671,12 +741,9 @@ static void gsr_video_encoder_vulkan_copy_textures_to_frame(gsr_video_encoder *e
                 .layerCount = 1,
             },
         };
-        self->vk.vkCmdPipelineBarrier(self->command_buffer,
+        self->vk.vkCmdPipelineBarrier(command_buffer,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
             0, 0, NULL, 0, NULL, 1, &dst_barrier_back);
-
-        vk_frame->layout[0] = VK_IMAGE_LAYOUT_GENERAL;
-        vk_frame->layout[1] = VK_IMAGE_LAYOUT_GENERAL;
     } else {
         /* Two separate single-plane images */
         VkImageMemoryBarrier dst_barriers[2] = {
@@ -711,7 +778,7 @@ static void gsr_video_encoder_vulkan_copy_textures_to_frame(gsr_video_encoder *e
                 },
             },
         };
-        self->vk.vkCmdPipelineBarrier(self->command_buffer,
+        self->vk.vkCmdPipelineBarrier(command_buffer,
             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
             0, 0, NULL, 0, NULL, 2, dst_barriers);
 
@@ -721,7 +788,7 @@ static void gsr_video_encoder_vulkan_copy_textures_to_frame(gsr_video_encoder *e
                 .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
                 .extent = { (uint32_t)self->texture_sizes[i].x, (uint32_t)self->texture_sizes[i].y, 1 },
             };
-            self->vk.vkCmdCopyImage(self->command_buffer,
+            self->vk.vkCmdCopyImage(command_buffer,
                 self->export_images[i], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 vk_frame->img[i],       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 1, &copy);
@@ -759,15 +826,12 @@ static void gsr_video_encoder_vulkan_copy_textures_to_frame(gsr_video_encoder *e
                 },
             },
         };
-        self->vk.vkCmdPipelineBarrier(self->command_buffer,
+        self->vk.vkCmdPipelineBarrier(command_buffer,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
             0, 0, NULL, 0, NULL, 2, dst_barriers_back);
-
-        vk_frame->layout[0] = VK_IMAGE_LAYOUT_GENERAL;
-        vk_frame->layout[1] = VK_IMAGE_LAYOUT_GENERAL;
     }
 
-    /* Transition export images back: TRANSFER_SRC_OPTIMAL → GENERAL for next GL frame */
+    /* Transition export images back: TRANSFER_SRC_OPTIMAL -> GENERAL for next GL frame */
     VkImageMemoryBarrier src_barriers_back[2];
     for(int i = 0; i < 2; i++) {
         src_barriers_back[i] = (VkImageMemoryBarrier){
@@ -786,65 +850,75 @@ static void gsr_video_encoder_vulkan_copy_textures_to_frame(gsr_video_encoder *e
             },
         };
     }
-    self->vk.vkCmdPipelineBarrier(self->command_buffer,
+    self->vk.vkCmdPipelineBarrier(command_buffer,
         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
         0, 0, NULL, 0, NULL, 2, src_barriers_back);
 
-    self->vk.vkEndCommandBuffer(self->command_buffer);
+    self->vk.vkEndCommandBuffer(command_buffer);
 
     /*
-     * Detect whether the encoder frame is multiplane to know how many timeline
-     * semaphores need to be signaled.
+     * The AVVkFrame timeline semaphores have to be waited on at sem_value (the encoder is done reading the previous frame)
+     * and signaled at sem_value + 1, otherwise the semaphore values are signaled out of order and FFmpeg waits forever
+     * for them when the frame is freed.
      */
-    const bool mp = (vk_frame->img[1] == VK_NULL_HANDLE || vk_frame->img[1] == vk_frame->img[0]);
-    const int num_sems = mp ? 1 : 2;
+    const int num_frame_semaphores = multiplane ? 1 : 2;
+    VkSemaphore wait_semaphores[3];
+    uint64_t wait_values[3];
+    VkPipelineStageFlags wait_stages[3];
+    int num_wait_semaphores = 0;
 
-    if(self->gl_ready_semaphore != VK_NULL_HANDLE) {
-        /*
-         * GPU-side sync path:
-         *  - Wait on the GL binary semaphore before executing the copy.
-         *  - Signal each AVVkFrame timeline semaphore so FFmpeg knows the frame is ready.
-         */
-        uint64_t signal_values[2];
-        VkSemaphore signal_sems[2];
-        for(int i = 0; i < num_sems; i++) {
-            signal_values[i] = vk_frame->sem_value[i] + 1;
-            signal_sems[i]   = vk_frame->sem[i];
-        }
-
-        VkTimelineSemaphoreSubmitInfo timeline_info = {
-            .sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-            .signalSemaphoreValueCount = (uint32_t)num_sems,
-            .pSignalSemaphoreValues    = signal_values,
-        };
-
-        const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-        VkSubmitInfo submit_info = {
-            .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .pNext                = &timeline_info,
-            .waitSemaphoreCount   = 1,
-            .pWaitSemaphores      = &self->gl_ready_semaphore,
-            .pWaitDstStageMask    = &wait_stage,
-            .commandBufferCount   = 1,
-            .pCommandBuffers      = &self->command_buffer,
-            .signalSemaphoreCount = (uint32_t)num_sems,
-            .pSignalSemaphores    = signal_sems,
-        };
-        self->vk.vkQueueSubmit(self->vk_queue, 1, &submit_info, self->fence);
-
-        for(int i = 0; i < num_sems; i++)
-            vk_frame->sem_value[i]++;
-    } else {
-        /* Fallback: plain submit, we already stalled via glFinish() */
-        VkSubmitInfo submit_info = {
-            .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .commandBufferCount = 1,
-            .pCommandBuffers    = &self->command_buffer,
-        };
-        self->vk.vkQueueSubmit(self->vk_queue, 1, &submit_info, self->fence);
+    if(slot->gl_ready_semaphore != VK_NULL_HANDLE) {
+        wait_semaphores[num_wait_semaphores] = slot->gl_ready_semaphore;
+        wait_values[num_wait_semaphores] = 0;
+        wait_stages[num_wait_semaphores] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        ++num_wait_semaphores;
     }
 
-    self->fence_submitted = true;
+    VkSemaphore signal_semaphores[2];
+    uint64_t signal_values[2];
+    for(int i = 0; i < num_frame_semaphores; i++) {
+        wait_semaphores[num_wait_semaphores] = vk_frame->sem[i];
+        wait_values[num_wait_semaphores] = vk_frame->sem_value[i];
+        wait_stages[num_wait_semaphores] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        ++num_wait_semaphores;
+
+        signal_semaphores[i] = vk_frame->sem[i];
+        signal_values[i] = vk_frame->sem_value[i] + 1;
+    }
+
+    VkTimelineSemaphoreSubmitInfo timeline_info = {
+        .sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+        .waitSemaphoreValueCount   = (uint32_t)num_wait_semaphores,
+        .pWaitSemaphoreValues      = wait_values,
+        .signalSemaphoreValueCount = (uint32_t)num_frame_semaphores,
+        .pSignalSemaphoreValues    = signal_values,
+    };
+
+    VkSubmitInfo submit_info = {
+        .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext                = &timeline_info,
+        .waitSemaphoreCount   = (uint32_t)num_wait_semaphores,
+        .pWaitSemaphores      = wait_semaphores,
+        .pWaitDstStageMask    = wait_stages,
+        .commandBufferCount   = 1,
+        .pCommandBuffers      = &command_buffer,
+        .signalSemaphoreCount = (uint32_t)num_frame_semaphores,
+        .pSignalSemaphores    = signal_semaphores,
+    };
+
+    const VkResult submit_result = self->vk.vkQueueSubmit(self->vk_queue, 1, &submit_info, slot->fence);
+    if(submit_result == VK_SUCCESS) {
+        for(int i = 0; i < num_frame_semaphores; i++) {
+            vk_frame->sem_value[i]++;
+            vk_frame->layout[i] = VK_IMAGE_LAYOUT_GENERAL;
+        }
+        slot->fence_submitted = true;
+        slot->submit_number = self->num_submits++;
+    } else {
+        gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_video_encoder_vulkan_copy_textures_to_frame: vkQueueSubmit failed, error: %d", submit_result);
+    }
+
+    vulkan_frames_context->unlock_frame(hw_frames_context, vk_frame);
 }
 
 void gsr_video_encoder_vulkan_stop(gsr_video_encoder_vulkan *self, AVCodecContext *video_codec_context) {
@@ -854,15 +928,20 @@ void gsr_video_encoder_vulkan_stop(gsr_video_encoder_vulkan *self, AVCodecContex
 
     if(self->vk_device) {
         /* Drain any in-flight copy before freeing resources */
-        if(self->fence_submitted) {
-            self->vk.vkWaitForFences(self->vk_device, 1, &self->fence, VK_TRUE, UINT64_MAX);
-            self->fence_submitted = false;
+        for(int i = 0; i < self->num_copy_slots; ++i) {
+            gsr_vulkan_copy_slot *slot = &self->copy_slots[i];
+            if(slot->fence_submitted) {
+                self->vk.vkWaitForFences(self->vk_device, 1, &slot->fence, VK_TRUE, UINT64_MAX);
+                slot->fence_submitted = false;
+            }
+            if(slot->gl_semaphore && self->params.egl->glDeleteSemaphoresEXT)
+                self->params.egl->glDeleteSemaphoresEXT(1, &slot->gl_semaphore);
+            if(slot->gl_ready_semaphore)
+                self->vk.vkDestroySemaphore(self->vk_device, slot->gl_ready_semaphore, NULL);
+            if(slot->fence)
+                self->vk.vkDestroyFence(self->vk_device, slot->fence, NULL);
         }
-        if(self->gl_ready_semaphore)
-            self->vk.vkDestroySemaphore(self->vk_device, self->gl_ready_semaphore, NULL);
-        if(self->fence)
-            self->vk.vkDestroyFence(self->vk_device, self->fence, NULL);
-        /* Destroying the command pool also frees the command buffer */
+        /* Destroying the command pool also frees the command buffers */
         if(self->command_pool)
             self->vk.vkDestroyCommandPool(self->vk_device, self->command_pool, NULL);
         for(int i = 0; i < 2; i++) {

@@ -360,6 +360,7 @@ static bool gsr_egl_proc_load_egl(gsr_egl *self) {
     self->glMemoryObjectParameterivEXT = (FUNC_glMemoryObjectParameterivEXT)self->eglGetProcAddress("glMemoryObjectParameterivEXT");
 
     self->glGenSemaphoresEXT = (FUNC_glGenSemaphoresEXT)self->eglGetProcAddress("glGenSemaphoresEXT");
+    self->glDeleteSemaphoresEXT = (FUNC_glDeleteSemaphoresEXT)self->eglGetProcAddress("glDeleteSemaphoresEXT");
     self->glImportSemaphoreFdEXT = (FUNC_glImportSemaphoreFdEXT)self->eglGetProcAddress("glImportSemaphoreFdEXT");
     self->glSignalSemaphoreEXT = (FUNC_glSignalSemaphoreEXT)self->eglGetProcAddress("glSignalSemaphoreEXT");
 
@@ -685,7 +686,4 @@ void gsr_egl_swap_buffers(gsr_egl *self) {
     self->glFlush();
     // TODO: Use the minimal barrier required
     self->glMemoryBarrier(GL_ALL_BARRIER_BITS); // GL_SHADER_IMAGE_ACCESS_BARRIER_BIT
-    // TODO: This is needed on nvidia because the cursor can flicker otherwise. Find a better solution
-    if(self->gpu_info.vendor == GSR_GPU_VENDOR_NVIDIA)
-        self->glFinish();
 }

@@ -859,6 +859,7 @@ static void gsr_capture_kms_pre_capture(gsr_capture *cap, gsr_capture_metadata *
             error_shown = true;
             gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_capture_kms_pre_capture: no drm found, capture will fail");
         }
+        color_conversion->schedule_clear = true;
         return;
     }
 
@@ -866,8 +867,10 @@ static void gsr_capture_kms_pre_capture(gsr_capture *cap, gsr_capture_metadata *
 
     self->capture_is_combined_plane = false;
     self->drm_fd = find_monitor_drm(self, &self->capture_is_combined_plane);
-    if(!self->drm_fd)
+    if(!self->drm_fd) {
+        color_conversion->schedule_clear = true;
         return;
+    }
 
     if(self->params.kde_night_light || drm_connector_is_hdr(self->drm_fd))
         gsr_capture_kms_update_crtc_color_ops(self, color_conversion);

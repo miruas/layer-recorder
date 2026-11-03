@@ -41,9 +41,14 @@ static void set_h264_max_resolution(PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR 
         .chromaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR
     };
 
-    VkVideoEncodeH264CapabilitiesKHR encode_caps = {
+    VkVideoEncodeH264CapabilitiesKHR codec_caps = {
         .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_CAPABILITIES_KHR,
         .pNext = NULL
+    };
+
+    VkVideoEncodeCapabilitiesKHR encode_caps = {
+        .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_CAPABILITIES_KHR,
+        .pNext = &codec_caps
     };
 
     VkVideoCapabilitiesKHR video_caps = {
@@ -79,9 +84,14 @@ static void set_hevc_max_resolution(PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR 
         .chromaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR
     };
 
-    VkVideoEncodeH265CapabilitiesKHR encode_caps = {
+    VkVideoEncodeH265CapabilitiesKHR codec_caps = {
         .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_CAPABILITIES_KHR,
         .pNext = NULL
+    };
+
+    VkVideoEncodeCapabilitiesKHR encode_caps = {
+        .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_CAPABILITIES_KHR,
+        .pNext = &codec_caps
     };
 
     VkVideoCapabilitiesKHR video_caps = {
@@ -123,9 +133,14 @@ static void set_av1_max_resolution(PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR v
         .chromaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_8_BIT_KHR
     };
 
-    VkVideoEncodeAV1CapabilitiesKHR encode_caps = {
+    VkVideoEncodeAV1CapabilitiesKHR codec_caps = {
         .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_CAPABILITIES_KHR,
         .pNext = NULL
+    };
+
+    VkVideoEncodeCapabilitiesKHR encode_caps = {
+        .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_CAPABILITIES_KHR,
+        .pNext = &codec_caps
     };
 
     VkVideoCapabilitiesKHR video_caps = {

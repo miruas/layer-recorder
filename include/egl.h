@@ -179,6 +179,7 @@ typedef void (*FUNC_glBufferStorageMemEXT)(unsigned int target, ssize_t size, un
 typedef void (*FUNC_glNamedBufferStorageMemEXT)(unsigned int buffer, ssize_t size, unsigned int memory, uint64_t offset);
 typedef void (*FUNC_glMemoryObjectParameterivEXT)(unsigned int memoryObject, unsigned int pname, const int *params);
 typedef void (*FUNC_glGenSemaphoresEXT)(int n, unsigned int *semaphores);
+typedef void (*FUNC_glDeleteSemaphoresEXT)(int n, const unsigned int *semaphores);
 typedef void (*FUNC_glImportSemaphoreFdEXT)(unsigned int semaphore, unsigned int handleType, int fd);
 typedef void (*FUNC_glSignalSemaphoreEXT)(unsigned int semaphore, unsigned int numBufferBarriers, const unsigned int *buffers, unsigned int numTextureBarriers, const unsigned int *textures, const unsigned int *dstLayouts);
 
@@ -250,6 +251,7 @@ struct gsr_egl {
     FUNC_glNamedBufferStorageMemEXT glNamedBufferStorageMemEXT;
     FUNC_glMemoryObjectParameterivEXT glMemoryObjectParameterivEXT;
     FUNC_glGenSemaphoresEXT glGenSemaphoresEXT;
+    FUNC_glDeleteSemaphoresEXT glDeleteSemaphoresEXT;
     FUNC_glImportSemaphoreFdEXT glImportSemaphoreFdEXT;
     FUNC_glSignalSemaphoreEXT glSignalSemaphoreEXT;
 

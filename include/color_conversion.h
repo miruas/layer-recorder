@@ -5,6 +5,7 @@
 #include "defs.h"
 #include "vec2.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 #define GSR_COLOR_CONVERSION_MAX_GRAPHICS_SHADERS 18
 #define GSR_COLOR_CONVERSION_MAX_FRAMEBUFFERS 2
@@ -89,6 +90,7 @@ typedef struct {
     unsigned int vertex_buffer_object_id;
 
     bool schedule_clear;
+    uint64_t clear_generation;
     float hdr_sdr_white_scale;
     float hdr_relative_peak_luminance;
     unsigned int gamma_lut_texture_id;
@@ -104,6 +106,7 @@ void gsr_color_conversion_deinit(gsr_color_conversion *self);
 
 void gsr_color_conversion_draw(gsr_color_conversion *self, unsigned int texture_id, vec2i destination_pos, vec2i destination_size, vec2i source_pos, vec2i source_size, vec2i texture_size, gsr_rotation rotation, gsr_flip flip, gsr_source_color source_color, bool external_texture);
 void gsr_color_conversion_clear(gsr_color_conversion *self);
+void gsr_color_conversion_set_destination_textures(gsr_color_conversion *self, const unsigned int *destination_textures, uint64_t *destination_clear_generation);
 void gsr_color_conversion_set_hdr_to_sdr_tone_mapping(gsr_color_conversion *self, bool enable, float hdr_peak_luminance, float sdr_white_luminance);
 void gsr_color_conversion_set_gamma_lut(gsr_color_conversion *self, const float *rgb_values, int num_entries);
 void gsr_color_conversion_enable_gamma_lut(gsr_color_conversion *self, bool enable);

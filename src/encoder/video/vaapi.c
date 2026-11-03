@@ -2,6 +2,7 @@
 #include "../../../include/log.h"
 #include "../../../include/utils.h"
 #include "../../../include/egl.h"
+#include "../../../include/ffmpeg_utils.h"
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext_vaapi.h>
@@ -20,10 +21,21 @@ typedef struct {
     int size_divisor;
 } gsr_video_encoder_vaapi_layer_format;
 
+#define MAX_SURFACES 32
+
+typedef struct {
+    VASurfaceID surface_id;
+    unsigned int textures[2];
+    uint64_t clear_generation;
+    uint64_t last_used;
+} gsr_vaapi_surface;
+
 typedef struct {
     gsr_video_encoder_vaapi_params params;
 
-    unsigned int target_textures[2];
+    gsr_vaapi_surface surfaces[MAX_SURFACES];
+    int num_surfaces;
+    uint64_t num_surface_lookups;
     vec2i texture_sizes[2];
     int num_textures;
 
@@ -165,7 +177,7 @@ static bool import_prime_layer(gsr_video_encoder_vaapi *self, const VADRMPRIMESu
     return success;
 }
 
-static bool import_surface(gsr_video_encoder_vaapi *self, VASurfaceID surface_id) {
+static bool import_surface(gsr_video_encoder_vaapi *self, VASurfaceID surface_id, gsr_vaapi_surface *surface) {
     VADRMPRIMESurfaceDescriptor prime;
     VAStatus va_status = vaExportSurfaceHandle(self->va_dpy, surface_id, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, VA_EXPORT_SURFACE_WRITE_ONLY | VA_EXPORT_SURFACE_SEPARATE_LAYERS, &prime);
     if(va_status != VA_STATUS_SUCCESS) {
@@ -182,24 +194,54 @@ static bool import_surface(gsr_video_encoder_vaapi *self, VASurfaceID surface_id
         return false;
     }
 
-    self->params.egl->glGenTextures(num_textures, self->target_textures);
+    memset(surface, 0, sizeof(*surface));
+    surface->surface_id = surface_id;
+    self->params.egl->glGenTextures(num_textures, surface->textures);
 
     bool success = true;
     for(int i = 0; i < num_textures && success; ++i) {
-        success = import_prime_layer(self, &prime, i, &layer_formats[i], self->target_textures[i]);
+        success = import_prime_layer(self, &prime, i, &layer_formats[i], surface->textures[i]);
     }
 
     close_prime_fds(&prime);
 
     if(!success) {
-        self->params.egl->glDeleteTextures(num_textures, self->target_textures);
-        self->target_textures[0] = 0;
-        self->target_textures[1] = 0;
+        self->params.egl->glDeleteTextures(num_textures, surface->textures);
         return false;
     }
 
     self->num_textures = num_textures;
     return true;
+}
+
+static gsr_vaapi_surface* get_surface(gsr_video_encoder_vaapi *self, VASurfaceID surface_id) {
+    ++self->num_surface_lookups;
+    for(int i = 0; i < self->num_surfaces; ++i) {
+        if(self->surfaces[i].surface_id == surface_id) {
+            self->surfaces[i].last_used = self->num_surface_lookups;
+            return &self->surfaces[i];
+        }
+    }
+
+    if(self->num_surfaces == MAX_SURFACES) {
+        int least_recently_used_index = 0;
+        for(int i = 1; i < self->num_surfaces; ++i) {
+            if(self->surfaces[i].last_used < self->surfaces[least_recently_used_index].last_used)
+                least_recently_used_index = i;
+        }
+
+        self->params.egl->glDeleteTextures(self->num_textures, self->surfaces[least_recently_used_index].textures);
+        self->surfaces[least_recently_used_index] = self->surfaces[self->num_surfaces - 1];
+        --self->num_surfaces;
+    }
+
+    gsr_vaapi_surface *surface = &self->surfaces[self->num_surfaces];
+    if(!import_surface(self, surface_id, surface))
+        return NULL;
+
+    surface->last_used = self->num_surface_lookups;
+    ++self->num_surfaces;
+    return surface;
 }
 
 static bool gsr_video_encoder_vaapi_setup_textures(gsr_video_encoder_vaapi *self, AVCodecContext *video_codec_context, AVFrame *frame) {
@@ -209,7 +251,7 @@ static bool gsr_video_encoder_vaapi_setup_textures(gsr_video_encoder_vaapi *self
         return false;
     }
 
-    return import_surface(self, (uintptr_t)frame->data[3]);
+    return get_surface(self, (uintptr_t)frame->data[3]) != NULL;
 }
 
 static void gsr_video_encoder_vaapi_stop(gsr_video_encoder_vaapi *self, AVCodecContext *video_codec_context);
@@ -352,9 +394,10 @@ static bool gsr_video_encoder_vaapi_start(gsr_video_encoder *encoder, AVCodecCon
 }
 
 void gsr_video_encoder_vaapi_stop(gsr_video_encoder_vaapi *self, AVCodecContext *video_codec_context) {
-    self->params.egl->glDeleteTextures(2, self->target_textures);
-    self->target_textures[0] = 0;
-    self->target_textures[1] = 0;
+    for(int i = 0; i < self->num_surfaces; ++i) {
+        self->params.egl->glDeleteTextures(self->num_textures, self->surfaces[i].textures);
+    }
+    self->num_surfaces = 0;
 
     if(video_codec_context && video_codec_context->hw_frames_ctx)
         av_buffer_unref(&video_codec_context->hw_frames_ctx);
@@ -362,10 +405,25 @@ void gsr_video_encoder_vaapi_stop(gsr_video_encoder_vaapi *self, AVCodecContext 
         av_buffer_unref(&self->device_ctx);
 }
 
+static void gsr_video_encoder_vaapi_prepare_frame(gsr_video_encoder *encoder, AVFrame *frame, gsr_color_conversion *color_conversion) {
+    gsr_video_encoder_vaapi *self = encoder->priv;
+
+    AVFrame *new_frame = gsr_hw_frame_alloc(frame->hw_frames_ctx);
+    if(!new_frame)
+        return;
+
+    gsr_vaapi_surface *surface = get_surface(self, (uintptr_t)new_frame->data[3]);
+    if(surface) {
+        gsr_frame_move_hw_buffer(frame, new_frame);
+        gsr_color_conversion_set_destination_textures(color_conversion, surface->textures, &surface->clear_generation);
+    }
+    av_frame_free(&new_frame);
+}
+
 static void gsr_video_encoder_vaapi_get_textures(gsr_video_encoder *encoder, unsigned int *textures, vec2i *texture_sizes, int *num_textures, gsr_destination_color *destination_color) {
     gsr_video_encoder_vaapi *self = encoder->priv;
     for(int i = 0; i < self->num_textures; ++i) {
-        textures[i] = self->target_textures[i];
+        textures[i] = self->surfaces[0].textures[i];
         texture_sizes[i] = self->texture_sizes[i];
     }
     *num_textures = self->num_textures;
@@ -393,6 +451,7 @@ gsr_video_encoder* gsr_video_encoder_vaapi_create(const gsr_video_encoder_vaapi_
 
     *encoder = (gsr_video_encoder) {
         .start = gsr_video_encoder_vaapi_start,
+        .prepare_frame = gsr_video_encoder_vaapi_prepare_frame,
         .get_textures = gsr_video_encoder_vaapi_get_textures,
         .destroy = gsr_video_encoder_vaapi_destroy,
         .priv = encoder_vaapi

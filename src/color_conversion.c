@@ -748,11 +748,8 @@ static bool gsr_color_conversion_load_hdr_graphics_shaders_if_needed(gsr_color_c
     return true;
 }
 
-static int load_framebuffers(gsr_color_conversion *self) {
-    /* TODO: Only generate the necessary amount of framebuffers (self->params.num_destination_textures) */
+static int attach_destination_textures(gsr_color_conversion *self) {
     const unsigned int draw_buffer = GL_COLOR_ATTACHMENT0;
-    self->params.egl->glGenFramebuffers(GSR_COLOR_CONVERSION_MAX_FRAMEBUFFERS, self->framebuffers);
-
     self->params.egl->glBindFramebuffer(GL_FRAMEBUFFER, self->framebuffers[0]);
     self->params.egl->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self->params.destination_textures[0], 0);
     self->params.egl->glDrawBuffers(1, &draw_buffer);
@@ -781,6 +778,12 @@ static int load_framebuffers(gsr_color_conversion *self) {
     err:
     self->params.egl->glBindFramebuffer(GL_FRAMEBUFFER, 0);
     return -1;
+}
+
+static int load_framebuffers(gsr_color_conversion *self) {
+    /* TODO: Only generate the necessary amount of framebuffers (self->params.num_destination_textures) */
+    self->params.egl->glGenFramebuffers(GSR_COLOR_CONVERSION_MAX_FRAMEBUFFERS, self->framebuffers);
+    return attach_destination_textures(self);
 }
 
 static int create_vertices(gsr_color_conversion *self) {
@@ -901,6 +904,7 @@ int gsr_color_conversion_init(gsr_color_conversion *self, const gsr_color_conver
     memset(self, 0, sizeof(*self));
     self->params.egl = params->egl;
     self->params = *params;
+    self->clear_generation = 1;
 
     switch(self->params.destination_color) {
         case GSR_DESTINATION_COLOR_NV12:
@@ -1280,7 +1284,7 @@ void gsr_color_conversion_draw(gsr_color_conversion *self, unsigned int texture_
     self->params.egl->glBindTexture(texture_target, 0);
 }
 
-void gsr_color_conversion_clear(gsr_color_conversion *self) {
+static void clear_destination_textures(gsr_color_conversion *self) {
     float color1[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     float color2[4] = {0.0f, 0.0f, 0.0f, 1.0f};
 
@@ -1324,6 +1328,21 @@ void gsr_color_conversion_clear(gsr_color_conversion *self) {
     }
 
     self->params.egl->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void gsr_color_conversion_clear(gsr_color_conversion *self) {
+    clear_destination_textures(self);
+    ++self->clear_generation;
+}
+
+void gsr_color_conversion_set_destination_textures(gsr_color_conversion *self, const unsigned int *destination_textures, uint64_t *destination_clear_generation) {
+    memcpy(self->params.destination_textures, destination_textures, self->params.num_destination_textures * sizeof(*destination_textures));
+    attach_destination_textures(self);
+
+    if(*destination_clear_generation != self->clear_generation) {
+        clear_destination_textures(self);
+        *destination_clear_generation = self->clear_generation;
+    }
 }
 
 void gsr_color_conversion_set_hdr_to_sdr_tone_mapping(gsr_color_conversion *self, bool enable, float hdr_peak_luminance, float sdr_white_luminance) {

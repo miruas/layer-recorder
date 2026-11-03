@@ -26,6 +26,7 @@ typedef struct {
 struct gsr_video_encoder {
     bool (*start)(gsr_video_encoder *encoder, AVCodecContext *video_codec_context, AVFrame *frame);
     void (*destroy)(gsr_video_encoder *encoder, AVCodecContext *video_codec_context);
+    void (*prepare_frame)(gsr_video_encoder *encoder, AVFrame *frame, gsr_color_conversion *color_conversion); /* Can be NULL */
     void (*copy_textures_to_frame)(gsr_video_encoder *encoder, AVFrame *frame, gsr_color_conversion *color_conversion); /* Can be NULL */
     /* |textures| should be able to fit GSR_COLOR_CONVERSION_MAX_DESTINATION_TEXTURES elements */
     void (*get_textures)(gsr_video_encoder *encoder, unsigned int *textures, vec2i *texture_sizes, int *num_textures, gsr_destination_color *destination_color);
@@ -37,6 +38,7 @@ struct gsr_video_encoder {
 /* Set |replay_buffer_time_seconds| and |fps| to 0 to disable replay buffer */
 bool gsr_video_encoder_start(gsr_video_encoder *encoder, AVCodecContext *video_codec_context, AVFrame *frame);
 void gsr_video_encoder_destroy(gsr_video_encoder *encoder, AVCodecContext *video_codec_context);
+void gsr_video_encoder_prepare_frame(gsr_video_encoder *encoder, AVFrame *frame, gsr_color_conversion *color_conversion);
 void gsr_video_encoder_copy_textures_to_frame(gsr_video_encoder *encoder, AVFrame *frame, gsr_color_conversion *color_conversion);
 void gsr_video_encoder_get_textures(gsr_video_encoder *encoder, unsigned int *textures, vec2i *texture_sizes, int *num_textures, gsr_destination_color *destination_color);
 

@@ -3,6 +3,7 @@
 #include "../../../include/egl.h"
 #include "../../../include/cuda.h"
 #include "../../../include/utils.h"
+#include "../../../include/ffmpeg_utils.h"
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext_cuda.h>
@@ -21,7 +22,6 @@ typedef struct {
 
     gsr_cuda cuda;
     CUgraphicsResource cuda_graphics_resources[GSR_COLOR_CONVERSION_MAX_DESTINATION_TEXTURES];
-    CUarray mapped_arrays[GSR_COLOR_CONVERSION_MAX_DESTINATION_TEXTURES];
     CUstream cuda_stream;
 } gsr_video_encoder_nvenc;
 
@@ -84,7 +84,7 @@ static bool gsr_video_encoder_nvenc_setup_context(gsr_video_encoder_nvenc *self,
     return true;
 }
 
-static bool cuda_register_opengl_texture(gsr_cuda *cuda, CUgraphicsResource *cuda_graphics_resource, CUarray *mapped_array, unsigned int texture_id) {
+static bool cuda_register_opengl_texture(gsr_cuda *cuda, CUgraphicsResource *cuda_graphics_resource, unsigned int texture_id) {
     CUresult res;
     res = cuda->cuGraphicsGLRegisterImage(cuda_graphics_resource, texture_id, GL_TEXTURE_2D, CU_GRAPHICS_REGISTER_FLAGS_NONE);
     if (res != CUDA_SUCCESS) {
@@ -94,10 +94,7 @@ static bool cuda_register_opengl_texture(gsr_cuda *cuda, CUgraphicsResource *cud
         return false;
     }
 
-    res = cuda->cuGraphicsResourceSetMapFlags(*cuda_graphics_resource, CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
-    res = cuda->cuGraphicsMapResources(1, cuda_graphics_resource, 0);
-
-    res = cuda->cuGraphicsSubResourceGetMappedArray(mapped_array, *cuda_graphics_resource, 0, 0);
+    cuda->cuGraphicsResourceSetMapFlags(*cuda_graphics_resource, CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
     return true;
 }
 
@@ -117,7 +114,7 @@ static bool gsr_video_encoder_nvenc_setup_textures(gsr_video_encoder_nvenc *self
             return false;
         }
 
-        if(!cuda_register_opengl_texture(&self->cuda, &self->cuda_graphics_resources[i], &self->mapped_arrays[i], self->target_textures[i])) {
+        if(!cuda_register_opengl_texture(&self->cuda, &self->cuda_graphics_resources[i], self->target_textures[i])) {
             return false;
         }
     }
@@ -175,7 +172,6 @@ void gsr_video_encoder_nvenc_stop(gsr_video_encoder_nvenc *self, AVCodecContext 
     if(self->cuda.cu_ctx) {
         for(int i = 0; i < GSR_COLOR_CONVERSION_MAX_DESTINATION_TEXTURES; ++i) {
             if(self->cuda_graphics_resources[i]) {
-                self->cuda.cuGraphicsUnmapResources(1, &self->cuda_graphics_resources[i], 0);
                 self->cuda.cuGraphicsUnregisterResource(self->cuda_graphics_resources[i]);
                 self->cuda_graphics_resources[i] = 0;
             }
@@ -187,7 +183,26 @@ void gsr_video_encoder_nvenc_stop(gsr_video_encoder_nvenc *self, AVCodecContext 
 
 static void gsr_video_encoder_nvenc_copy_textures_to_frame(gsr_video_encoder *encoder, AVFrame *frame, gsr_color_conversion *color_conversion) {
     gsr_video_encoder_nvenc *self = encoder->priv;
+
+    /*
+        Mapping the textures makes the copy wait for the opengl rendering to finish and unmapping them makes opengl wait for the copy to finish, on the gpu.
+        The encoder waits for the copy on the gpu since FFmpeg gives the encoder the same cuda stream (nvEncSetIOCudaStreams).
+    */
+    const CUresult map_result = self->cuda.cuGraphicsMapResources(self->texture_format.num_planes, self->cuda_graphics_resources, self->cuda_stream);
+    if(map_result != CUDA_SUCCESS) {
+        const char *err_str = "unknown";
+        self->cuda.cuGetErrorString(map_result, &err_str);
+        gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_video_encoder_nvenc_copy_textures_to_frame: cuGraphicsMapResources failed, error: %s", err_str);
+        return;
+    }
+
+    gsr_frame_replace_hw_buffer(frame);
+
     for(int i = 0; i < self->texture_format.num_planes; ++i) {
+        CUarray mapped_array = NULL;
+        if(self->cuda.cuGraphicsSubResourceGetMappedArray(&mapped_array, self->cuda_graphics_resources[i], 0, 0) != CUDA_SUCCESS)
+            continue;
+
         CUDA_MEMCPY2D memcpy_struct;
         memcpy_struct.srcXInBytes = 0;
         memcpy_struct.srcY = 0;
@@ -197,7 +212,7 @@ static void gsr_video_encoder_nvenc_copy_textures_to_frame(gsr_video_encoder *en
         memcpy_struct.dstY = 0;
         memcpy_struct.dstMemoryType = CU_MEMORYTYPE_DEVICE;
 
-        memcpy_struct.srcArray = self->mapped_arrays[i];
+        memcpy_struct.srcArray = mapped_array;
         memcpy_struct.srcPitch = self->target_texture_size[i].x;
         memcpy_struct.dstDevice = (CUdeviceptr)frame->data[i];
         memcpy_struct.dstPitch = frame->linesize[i];
@@ -207,8 +222,7 @@ static void gsr_video_encoder_nvenc_copy_textures_to_frame(gsr_video_encoder *en
         self->cuda.cuMemcpy2DAsync_v2(&memcpy_struct, self->cuda_stream);
     }
 
-    // TODO: needed?
-    self->cuda.cuStreamSynchronize(self->cuda_stream);
+    self->cuda.cuGraphicsUnmapResources(self->texture_format.num_planes, self->cuda_graphics_resources, self->cuda_stream);
 }
 
 static void gsr_video_encoder_nvenc_get_textures(gsr_video_encoder *encoder, unsigned int *textures, vec2i *texture_sizes, int *num_textures, gsr_destination_color *destination_color) {

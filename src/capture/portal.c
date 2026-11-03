@@ -348,11 +348,12 @@ static void gsr_capture_portal_pre_capture(gsr_capture *cap, gsr_capture_metadat
                 self->capture_size.y = self->pipewire_data.region.height;
                 color_conversion->schedule_clear = true;
             }
-        } else if(self->pipewire_data.texture_width == 0 || !gsr_pipewire_video_update_cursor(&self->pipewire, self->texture_map, &self->pipewire_data.cursor_region)) {
-            /* Theres no new video frame to capture and the cursor hasn't changed (which only happens in cursor metadata mode).
-               If the cursor has changed then the latest video frame is redrawn with the new cursor state, otherwise nothing is captured.
-               This is needed on gnome which doesn't send new video frames when capturing a window and only the cursor moves. */
+        } else if(self->pipewire_data.texture_width == 0) {
             return;
+        } else {
+            /* Theres no new video frame to capture so the latest video frame is redrawn, with the new cursor state in cursor metadata mode.
+               This is needed on gnome which doesn't send new video frames when capturing a window and only the cursor moves. */
+            gsr_pipewire_video_update_cursor(&self->pipewire, self->texture_map, &self->pipewire_data.cursor_region);
         }
     }
 

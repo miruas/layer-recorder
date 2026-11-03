@@ -17,6 +17,12 @@ void gsr_video_encoder_destroy(gsr_video_encoder *encoder, AVCodecContext *video
     encoder->destroy(encoder, video_codec_context);
 }
 
+void gsr_video_encoder_prepare_frame(gsr_video_encoder *encoder, AVFrame *frame, gsr_color_conversion *color_conversion) {
+    assert(encoder->started);
+    if(encoder->prepare_frame)
+        encoder->prepare_frame(encoder, frame, color_conversion);
+}
+
 void gsr_video_encoder_copy_textures_to_frame(gsr_video_encoder *encoder, AVFrame *frame, gsr_color_conversion *color_conversion) {
     assert(encoder->started);
     if(encoder->copy_textures_to_frame)
