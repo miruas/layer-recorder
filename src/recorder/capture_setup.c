@@ -471,13 +471,17 @@ static bool video_source_size_is_relative_to_video_size(const gsr_video_source *
         || (self->capture_source->size.y_type == VVEC2I_TYPE_SCALAR && self->capture_source->size.y != 100);
 }
 
+static bool video_source_is_camera(const gsr_video_source *self) {
+    return self->capture_source->type == GSR_CAPTURE_SOURCE_TYPE_V4L2;
+}
+
 /* The video size is the area that all capture sources cover */
-static vec2i video_sources_get_total_size(const gsr_video_sources *self) {
+static vec2i video_sources_get_total_size(const gsr_video_sources *self, bool include_cameras) {
     vec2i start_pos = {99999, 99999};
     vec2i end_pos = {-99999, -99999};
     for(size_t i = 0; i < self->num_items; ++i) {
         const gsr_video_source *video_source = &self->items[i];
-        if(video_source_size_is_relative_to_video_size(video_source))
+        if(video_source_size_is_relative_to_video_size(video_source) || (!include_cameras && video_source_is_camera(video_source)))
             continue;
 
         const vec2i video_source_start_pos = {
@@ -506,6 +510,9 @@ static vec2i video_sources_get_total_size(const gsr_video_sources *self) {
         start_pos = (vec2i){0, 0};
         end_pos = (vec2i){0, 0};
         for(size_t i = 0; i < self->num_items; ++i) {
+            if(!include_cameras && video_source_is_camera(&self->items[i]))
+                continue;
+
             const vec2i capture_size = self->items[i].metadata.video_size;
             if(capture_size.x > end_pos.x)
                 end_pos.x = capture_size.x;
@@ -521,6 +528,33 @@ static vec2i video_sources_get_total_size(const gsr_video_sources *self) {
         video_size.y = 0;
 
     return video_size;
+}
+
+static vec2i video_source_get_expected_recording_size(const gsr_video_source *self, vec2i video_size, vec2i output_resolution) {
+    const vvec2i size = self->capture_source->size;
+    if(size.x == 0 || size.y == 0)
+        return output_resolution;
+
+    const vec2i relative_to = video_size.x > 0 && video_size.y > 0 ? video_size : output_resolution;
+    vec2i recording_size = { size.x, size.y };
+    if(size.x_type == VVEC2I_TYPE_SCALAR)
+        recording_size.x = relative_to.x * ((double)size.x / 100.0);
+    if(size.y_type == VVEC2I_TYPE_SCALAR)
+        recording_size.y = relative_to.y * ((double)size.y / 100.0);
+
+    if(recording_size.x <= 0 || recording_size.y <= 0)
+        return (vec2i){0, 0};
+
+    return recording_size;
+}
+
+static int video_source_start(gsr_video_source *self) {
+    const int capture_result = gsr_capture_start(self->capture, &self->metadata);
+    if(capture_result != 0) {
+        gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_capture_start failed");
+        return -capture_result;
+    }
+    return GSR_ERROR_OK;
 }
 
 int gsr_video_sources_create(gsr_video_sources *self, const gsr_recorder_settings *settings, gsr_egl *egl, gsr_capture_deps *deps, bool prefer_ximage, gsr_capture_sources *capture_sources, vec2i *video_size) {
@@ -556,15 +590,30 @@ int gsr_video_sources_create(gsr_video_sources *self, const gsr_recorder_setting
     }
 
     for(size_t i = 0; i < self->num_items; ++i) {
-        const int capture_result = gsr_capture_start(self->items[i].capture, &self->items[i].metadata);
-        if(capture_result != 0) {
-            gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_capture_start failed");
+        if(video_source_is_camera(&self->items[i]))
+            continue;
+
+        const int start_result = video_source_start(&self->items[i]);
+        if(start_result != GSR_ERROR_OK) {
             gsr_video_sources_deinit(self);
-            return -capture_result;
+            return start_result;
         }
     }
 
-    *video_size = video_sources_get_total_size(self);
+    const vec2i video_size_without_cameras = video_sources_get_total_size(self, false);
+    for(size_t i = 0; i < self->num_items; ++i) {
+        if(!video_source_is_camera(&self->items[i]))
+            continue;
+
+        self->items[i].metadata.recording_size = video_source_get_expected_recording_size(&self->items[i], video_size_without_cameras, settings->output_resolution);
+        const int start_result = video_source_start(&self->items[i]);
+        if(start_result != GSR_ERROR_OK) {
+            gsr_video_sources_deinit(self);
+            return start_result;
+        }
+    }
+
+    *video_size = video_sources_get_total_size(self, true);
 
     for(size_t i = 0; i < self->num_items; ++i) {
         self->items[i].metadata.video_size = *video_size;

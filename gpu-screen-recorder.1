@@ -212,6 +212,24 @@ for the device.
 
 A value of 0 means to use the best option available.
 .RE
+.PP
+When the size that the camera is drawn at in the video is known, which is when the camera source has the
+.B width
+and
+.B height
+options (for example
+.BR "/dev/video0;width=30%;height=30%" )
+or when
+.B -s
+is used, the smallest camera resolution that covers that size (with the closest aspect ratio) is used. This reduces cpu usage when the camera uses mjpeg.
+.B camera_width
+and
+.B camera_height
+are then only used if they are smaller than that resolution. Otherwise the highest camera resolution is used, or
+.B camera_width
+and
+.B camera_height
+if they are set.
 .TP
 .BI \-region " WxH+X+Y"
 Specify region to capture when using

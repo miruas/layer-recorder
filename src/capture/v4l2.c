@@ -388,6 +388,120 @@ static void gsr_capture_v4l2_update_params(int fd) {
     }
 }
 
+typedef struct {
+    bool covers_drawn_size;
+    uint32_t fps_rank;
+    uint64_t drawn_area;
+    uint64_t camera_area;
+    bool yuyv;
+} gsr_capture_v4l2_setup_rank;
+
+static gsr_capture_v4l2_setup_rank gsr_capture_v4l2_get_setup_rank(const gsr_capture_v4l2_supported_setup *setup, uint32_t camera_fps, vec2i drawn_size_max) {
+    const vec2i camera_size = { setup->resolution.width, setup->resolution.height };
+    const vec2i drawn_size = scale_keep_aspect_ratio(camera_size, drawn_size_max);
+    const uint32_t fps = gsr_capture_v4l2_framerate_to_number(setup->framerate);
+    return (gsr_capture_v4l2_setup_rank){
+        .covers_drawn_size = camera_size.x >= drawn_size.x && camera_size.y >= drawn_size.y,
+        .fps_rank = camera_fps > 0 && fps == camera_fps ? UINT32_MAX : fps,
+        .drawn_area = (uint64_t)drawn_size.x * (uint64_t)drawn_size.y,
+        .camera_area = (uint64_t)camera_size.x * (uint64_t)camera_size.y,
+        .yuyv = setup->pixfmt == GSR_CAPTURE_V4L2_PIXFMT_YUYV,
+    };
+}
+
+static bool gsr_capture_v4l2_setup_rank_is_better(const gsr_capture_v4l2_setup_rank *a, const gsr_capture_v4l2_setup_rank *b) {
+    if(a->covers_drawn_size != b->covers_drawn_size)
+        return a->covers_drawn_size;
+
+    if(a->fps_rank != b->fps_rank)
+        return a->fps_rank > b->fps_rank;
+
+    if(a->covers_drawn_size) {
+        if(a->drawn_area != b->drawn_area)
+            return a->drawn_area > b->drawn_area;
+        if(a->camera_area != b->camera_area)
+            return a->camera_area < b->camera_area;
+    } else if(a->camera_area != b->camera_area) {
+        return a->camera_area > b->camera_area;
+    }
+
+    return a->yuyv && !b->yuyv;
+}
+
+static bool gsr_capture_v4l2_get_best_setup_for_drawn_size(
+    const gsr_capture_v4l2_supported_setup *supported_setups,
+    size_t num_supported_setups,
+    gsr_capture_v4l2_pixfmt pixfmt,
+    uint32_t camera_fps,
+    vec2i drawn_size_max,
+    gsr_capture_v4l2_supported_setup *best_supported_setup)
+{
+    int best_match_index = -1;
+    gsr_capture_v4l2_setup_rank best_match_rank = {0};
+
+    for(size_t i = 0; i < num_supported_setups; ++i) {
+        const gsr_capture_v4l2_supported_setup *setup = &supported_setups[i];
+        if(pixfmt != GSR_CAPTURE_V4L2_PIXFMT_AUTO && pixfmt != setup->pixfmt)
+            continue;
+
+        const gsr_capture_v4l2_setup_rank rank = gsr_capture_v4l2_get_setup_rank(setup, camera_fps, drawn_size_max);
+        if(best_match_index == -1 || gsr_capture_v4l2_setup_rank_is_better(&rank, &best_match_rank)) {
+            best_match_index = i;
+            best_match_rank = rank;
+        }
+    }
+
+    if(best_match_index == -1)
+        return false;
+
+    *best_supported_setup = supported_setups[best_match_index];
+    return true;
+}
+
+static bool gsr_capture_v4l2_resolution_equals(gsr_capture_v4l2_resolution a, gsr_capture_v4l2_resolution b) {
+    return a.width == b.width && a.height == b.height;
+}
+
+static bool gsr_capture_v4l2_resolution_is_smaller(gsr_capture_v4l2_resolution a, gsr_capture_v4l2_resolution b) {
+    return a.width <= b.width && a.height <= b.height && !gsr_capture_v4l2_resolution_equals(a, b);
+}
+
+static bool gsr_capture_v4l2_get_best_setup(
+    const gsr_capture_v4l2 *self,
+    const gsr_capture_v4l2_supported_setup *supported_setups,
+    size_t num_supported_setups,
+    vec2i drawn_size_max,
+    gsr_capture_v4l2_supported_setup *best_supported_setup)
+{
+    const gsr_capture_v4l2_resolution camera_resolution = self->params.camera_resolution;
+    const bool drawn_size_known = drawn_size_max.x > 0 && drawn_size_max.y > 0;
+    if(!drawn_size_known)
+        return gsr_capture_v4l2_get_best_matching_setup(supported_setups, num_supported_setups, self->params.pixfmt, self->params.camera_fps, camera_resolution, best_supported_setup);
+
+    if(!gsr_capture_v4l2_get_best_setup_for_drawn_size(supported_setups, num_supported_setups, self->params.pixfmt, self->params.camera_fps, drawn_size_max, best_supported_setup))
+        return false;
+
+    if(camera_resolution.width == 0 || camera_resolution.height == 0 || gsr_capture_v4l2_resolution_equals(camera_resolution, best_supported_setup->resolution))
+        return true;
+
+    if(!gsr_capture_v4l2_resolution_is_smaller(camera_resolution, best_supported_setup->resolution)) {
+        gsr_log(GSR_LOG_LEVEL_WARNING, "gsr_capture_v4l2_create: camera_width and camera_height (%ux%u) are ignored for %s because they are larger than the resolution that is needed for the size that the camera is drawn at (%dx%d)",
+            camera_resolution.width, camera_resolution.height, self->params.device_path, drawn_size_max.x, drawn_size_max.y);
+        return true;
+    }
+
+    gsr_capture_v4l2_supported_setup camera_resolution_setup;
+    if(!gsr_capture_v4l2_get_best_matching_setup(supported_setups, num_supported_setups, self->params.pixfmt, self->params.camera_fps, camera_resolution, &camera_resolution_setup)
+        || !gsr_capture_v4l2_resolution_equals(camera_resolution_setup.resolution, camera_resolution))
+    {
+        gsr_log(GSR_LOG_LEVEL_WARNING, "gsr_capture_v4l2_create: %s doesn't support the resolution %ux%u (camera_width and camera_height)", self->params.device_path, camera_resolution.width, camera_resolution.height);
+        return true;
+    }
+
+    *best_supported_setup = camera_resolution_setup;
+    return true;
+}
+
 static void gsr_capture_v4l2_set_framerate(int fd, gsr_capture_v4l2_framerate framerate) {
     struct v4l2_streamparm streamparm = {
         .type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
@@ -542,7 +656,7 @@ static bool is_libturbojpeg_library_available(void) {
     return has_libturbojpeg_lib;
 }
 
-static int gsr_capture_v4l2_setup(gsr_capture_v4l2 *self) {
+static int gsr_capture_v4l2_setup(gsr_capture_v4l2 *self, vec2i drawn_size_max) {
     self->fd = open(self->params.device_path, O_RDWR | O_NONBLOCK);
     if(self->fd < 0) {
         gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_capture_v4l2_create: failed to open %s, error: %s", self->params.device_path, strerror(errno));
@@ -586,7 +700,7 @@ static int gsr_capture_v4l2_setup(gsr_capture_v4l2 *self) {
     const size_t num_supported_setups = gsr_capture_v4l2_get_supported_setups(self->fd, supported_setups, 128, has_libturbojpeg_lib);
 
     gsr_capture_v4l2_supported_setup best_supported_setup = {0};
-    if(!gsr_capture_v4l2_get_best_matching_setup(supported_setups, num_supported_setups, self->params.pixfmt, self->params.camera_fps, self->params.camera_resolution, &best_supported_setup)) {
+    if(!gsr_capture_v4l2_get_best_setup(self, supported_setups, num_supported_setups, drawn_size_max, &best_supported_setup)) {
         gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_capture_v4l2_create: %s doesn't report any frame resolutions and framerates", self->params.device_path);
         return -1;
     }
@@ -695,7 +809,7 @@ static int gsr_capture_v4l2_setup(gsr_capture_v4l2 *self) {
 static int gsr_capture_v4l2_start(gsr_capture *cap, gsr_capture_metadata *capture_metadata) {
     gsr_capture_v4l2 *self = cap->priv;
 
-    const int result = gsr_capture_v4l2_setup(self);
+    const int result = gsr_capture_v4l2_setup(self, capture_metadata->recording_size);
     if(result != 0) {
         gsr_capture_v4l2_stop(self);
         return result;

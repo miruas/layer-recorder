@@ -31,7 +31,7 @@ typedef struct {
     const char *device_path;
     gsr_capture_v4l2_pixfmt pixfmt;
     uint32_t camera_fps; /* Set to 0 if the best option should be chosen */
-    gsr_capture_v4l2_resolution camera_resolution; /* Set to 0, 0 if the best option should be chosen */
+    gsr_capture_v4l2_resolution camera_resolution; /* Set to 0, 0 if the best option should be chosen. If gsr_capture_metadata.recording_size is set at start then this is only used if it's smaller than the best resolution for that size */
 } gsr_capture_v4l2_params;
 
 gsr_capture* gsr_capture_v4l2_create(const gsr_capture_v4l2_params *params);
