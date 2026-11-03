@@ -629,13 +629,13 @@ static bool gsr_capture_v4l2_map_buffer(gsr_capture_v4l2 *self, const struct v4l
                     gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_capture_v4l2_map_buffer: mmap failed, error: %s", strerror(errno));
                     return false;
                 }
+            }
 
-                // GL_RGBA is intentionally used here instead of GL_RGB, because the performance is much better when using glTexSubImage2D (22% cpu usage compared to 38% cpu usage)
-                self->texture_id[i] = gl_create_texture(self->params.egl, fmt->fmt.pix.width, fmt->fmt.pix.height, GL_RGBA8, GL_RGBA, GL_LINEAR);
-                if(self->texture_id[i] == 0) {
-                    gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_capture_v4l2_map_buffer: failed to create texture");
-                    return false;
-                }
+            // GL_RGBA is intentionally used here instead of GL_RGB, because the performance is much better when using glTexSubImage2D (22% cpu usage compared to 38% cpu usage)
+            self->texture_id[0] = gl_create_texture(self->params.egl, fmt->fmt.pix.width, fmt->fmt.pix.height, GL_RGBA8, GL_RGBA, GL_LINEAR);
+            if(self->texture_id[0] == 0) {
+                gsr_log(GSR_LOG_LEVEL_ERROR, "gsr_capture_v4l2_map_buffer: failed to create texture");
+                return false;
             }
 
             if(!gsr_capture_v4l2_create_pbos(self, fmt->fmt.pix.width, fmt->fmt.pix.height))
@@ -883,7 +883,7 @@ static void gsr_capture_v4l2_decode_jpeg_to_texture(gsr_capture_v4l2 *self, cons
         return;
     }
 
-    self->params.egl->glBindTexture(GL_TEXTURE_2D, self->texture_id[buf->index]);
+    self->params.egl->glBindTexture(GL_TEXTURE_2D, self->texture_id[0]);
 
     self->pbo_index = (self->pbo_index + 1) % NUM_PBOS;
     const unsigned int next_pbo_index = (self->pbo_index + 1) % NUM_PBOS;
@@ -971,7 +971,7 @@ static int gsr_capture_v4l2_capture(gsr_capture *cap, gsr_capture_metadata *capt
             self->buffer_draw_fence[texture_index] = self->params.egl->glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         }
     } else {
-        gsr_color_conversion_draw(color_conversion, self->texture_id[texture_index],
+        gsr_color_conversion_draw(color_conversion, self->texture_id[0],
             target_pos, output_size,
             (vec2i){0, 0}, self->capture_size, self->capture_size,
             GSR_ROT_0, capture_metadata->flip, GSR_SOURCE_COLOR_RGB, false);
