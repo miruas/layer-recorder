@@ -62,31 +62,3 @@ class AudioStreams(unittest.TestCase):
         _,voice=stream_identity({'application.name':'WEBRTC VoiceEngine','application.process.binary':'Discord','media.role':'Music','media.name':'WEBRTC VoiceEngine'})
         _,media=stream_identity({'application.name':'Chromium','application.id':'com.discordapp.Discord','media.role':'Movie'})
         self.assertEqual(voice['name'],'Discord — Voice chat');self.assertEqual(media['name'],'Discord — Media')
-
-    def test_recycled_port_ids_reconnect_and_application_links_are_passive(self):
-        from unittest.mock import patch
-        from katman.capture import Recorder
-        r=Recorder.__new__(Recorder);r.origin=0
-        t=SimpleNamespace(key='app:discord:voice',meta={'type':'audio'},name='capture-voice',links={(11,12)},activity=[],presence=[],alive=lambda:True)
-        r.tracks=[t]
-        node={'type':'PipeWire:Interface:Node','id':1,'info':{'state':'running','props':{'application.name':'Discord','media.class':'Stream/Output/Audio','media.role':'Communication','node.name':'Discord'}}}
-        capture={'type':'PipeWire:Interface:Node','id':99,'info':{'props':{'application.name':'Layer capture','media.class':'Stream/Input/Audio','node.name':'capture-voice'}}}
-        ports=[{'type':'PipeWire:Interface:Port','id':11,'info':{'props':{'node.id':1,'port.name':'output_FL','port.direction':'out'}}},{'type':'PipeWire:Interface:Port','id':12,'info':{'props':{'node.id':99,'port.name':'input_FL','port.direction':'in'}}}]
-        link={'type':'PipeWire:Interface:Link','info':{'output-port-id':11,'input-port-id':12}}
-        with patch('katman.capture.run') as run:
-            r._discover_audio([node,capture,*ports,link]);run.assert_not_called()
-            r._discover_audio([node,capture,*ports]);run.assert_called_with(['pw-link','-P','11','12'],timeout=2)
-
-    def test_role_change_disconnects_only_the_old_owned_capture_link(self):
-        from unittest.mock import patch
-        from katman.capture import Recorder
-        r=Recorder.__new__(Recorder);r.origin=0
-        voice=SimpleNamespace(key='app:discord:voice',meta={'type':'audio'},name='capture-voice',links=set(),activity=[],presence=[],alive=lambda:True)
-        media=SimpleNamespace(key='app:discord:media',meta={'type':'audio'},name='capture-media',links={(11,12)},activity=[],presence=[],alive=lambda:True);r.tracks=[voice,media]
-        def node(id,name,kind,**props):return {'type':'PipeWire:Interface:Node','id':id,'info':{'state':'running','props':{'node.name':name,'media.class':kind,**props}}}
-        def port(id,nid,name,d):return {'type':'PipeWire:Interface:Port','id':id,'info':{'props':{'node.id':nid,'port.name':name,'port.direction':d}}}
-        objects=[node(1,'Discord','Stream/Output/Audio',**{'application.name':'Discord','media.role':'Communication'}),node(98,'capture-media','Stream/Input/Audio'),node(99,'capture-voice','Stream/Input/Audio'),port(11,1,'output_FL','out'),port(12,98,'input_FL','in'),port(13,99,'input_FL','in'),{'type':'PipeWire:Interface:Link','info':{'output-port-id':11,'input-port-id':12}}]
-        with patch('katman.capture.run') as run:
-            r._discover_audio(objects)
-            self.assertEqual(run.call_count,2);self.assertEqual(run.call_args_list[0].args[0],['pw-link','-d','11','12']);self.assertEqual(run.call_args_list[1].args[0],['pw-link','-P','11','13'])
-        self.assertFalse(media.links);self.assertEqual(voice.links,{(11,13)})

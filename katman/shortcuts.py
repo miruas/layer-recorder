@@ -42,6 +42,8 @@ def chord(pair):return ' '.join(name for name,value in MODS.items() if pair[0]&v
 
 
 def check_conflicts(config,bindings=None):
+    from .platform_capture import hyprland_available
+    if not hyprland_available() and bindings is None:return
     if not config['shortcuts_enabled']:return
     bindings=inventory() if bindings is None else bindings
     for action,sequence in config['shortcuts'].items():

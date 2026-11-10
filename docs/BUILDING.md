@@ -2,17 +2,17 @@
 
 ## Application and native components
 
-Follow [Installation](INSTALLATION.md) for Linux/Hyprland, PipeWire, GPU drivers and development dependencies. The repository preserves upstream GSR history and includes its modified source under `upstream/gpu-screen-recorder`. Optional native sources are pinned in `packaging/native-lock.json`; the build tool downloads those exact revisions and applies the checked-in patches.
+Follow [Installation](INSTALLATION.md) for Linux/Hyprland, PipeWire, GPU drivers and development dependencies. Install stable Rust and Cargo (Rust 1.85+). The repository preserves upstream GSR history and includes its modified source under `upstream/gpu-screen-recorder`. Optional native sources are pinned in `packaging/native-lock.json`; the build tool downloads those exact revisions and applies the checked-in patches.
 
 ```sh
 git clone https://github.com/miruas/layer-recorder.git
 cd layer-recorder
-git checkout v0.6.0
+git checkout v0.7.0
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e . meson ninja
 python tools/build-native.py gpu-screen-recorder
-python tools/build-native.py wf-recorder
+python tools/build-native.py recorder
 python tools/build-native.py gsr-ui
 python tools/build-native.py whisper
 python install.py --profile auto --enable
@@ -49,3 +49,5 @@ python tools/check-public-tree.py
 ```
 
 Hardware capture tests are opt-in; see [Testing](TESTING.md). Native Settings supports editable Layer keys and existing GSR preferences without requiring a custom build.
+
+The corresponding-source archive includes vendored Rust crates under `layer-recorder/native/recorder/vendor` and a portable `.cargo/config.toml`. From that crate directory, `cargo build --offline --locked --release` rebuilds the core without fetching dependencies. The normal Git checkout uses Cargo.lock and downloads the pinned crate versions on its first build.

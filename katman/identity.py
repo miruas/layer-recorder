@@ -28,6 +28,8 @@ def application_label(client):
 
 def focused_application(pid=None, remember=True):
     cache = CACHE / 'last-application.json'
+    from .platform_capture import hyprland_available
+    if not hyprland_available():return 'Desktop'
     try:
         if pid:
             clients = json.loads(subprocess.check_output(['hyprctl', 'clients', '-j'], timeout=2))

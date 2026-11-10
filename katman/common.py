@@ -59,20 +59,10 @@ def probe(path):
 
 
 def monitors():
-    values = json.loads(run(["hyprctl", "monitors", "-j"]))
-    out = []
-    for m in values:
-        if m.get("disabled"):
-            continue
-        # Hyprland positions use logical pixels; rotated pixel dimensions do not.
-        w, h = m["width"], m["height"]
-        if m.get("transform", 0) % 2:
-            w, h = h, w
-        scale = m.get("scale", 1)
-        out.append({"name": m["name"], "label": m.get("description") or m["name"],
-                    "x": m["x"], "y": m["y"], "width": w, "height": h,
-                    "logical_width": round(w / scale), "logical_height": round(h / scale)})
-    return out
+    from .hardware import gsr_program
+    from .platform_capture import displays
+    cfg=settings()
+    return displays(gsr_program(cfg),cfg['capture_targets'])
 
 
 def graph():

@@ -6,9 +6,9 @@ Run `layer config validate`, `layer doctor`, `gpu-screen-recorder --info` and `f
 
 ## Capture cannot start
 
-- Confirm Hyprland and PipeWire are running in the same graphical session.
-- Confirm the user service has the Wayland/Hyprland session environment.
-- If GSR cannot enumerate/capture an output, build the patched Wayland helper or select `capture_backend: wf-recorder`.
+- Confirm the GSR capture source and PipeWire/PulseAudio compatibility server are available in the graphical session.
+- Confirm the user service has the Wayland/X11 and PipeWire session environment; Hyprland variables are optional.
+- If GSR cannot enumerate/capture an output, configure an explicit portal target and grant desktop permission. The wf-recorder fallback is removed. If GSR cannot see application audio, check the PipeWire PulseAudio service and PULSE_SERVER.
 - For AMD/Intel, inspect VA-API encoding entrypoints with `vainfo`. Check device/session permissions through your distribution's supported mechanism.
 - A forced GPU profile must match available hardware. GSR itself chooses the capture device; use auto or a compatible Wayland path when the selected vendor differs.
 - Cross-GPU DMA-BUF import trouble can require `wf_no_dmabuf: true`.

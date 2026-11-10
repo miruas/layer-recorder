@@ -4,7 +4,7 @@
 import re,subprocess,sys,json,hashlib
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent.parent
-ALLOWED_TOP={'katman','tests','docs','examples','tools','patches','licenses','packaging','.github','upstream','UPSTREAM.md','MANIFEST.in','README.md','LICENSE','NOTICE.md','CHANGELOG.md','CONTRIBUTING.md','SECURITY.md','CODE_OF_CONDUCT.md','pyproject.toml','install.py','run.sh','.gitignore','.gitattributes','.dockerignore'}
+ALLOWED_TOP={'native','katman','tests','docs','examples','tools','patches','licenses','packaging','.github','upstream','UPSTREAM.md','MANIFEST.in','README.md','LICENSE','NOTICE.md','CHANGELOG.md','CONTRIBUTING.md','SECURITY.md','CODE_OF_CONDUCT.md','pyproject.toml','install.py','run.sh','.gitignore','.gitattributes','.dockerignore'}
 PATTERNS=[r'/ho'+r'me/[^\s/]+/',r'/run'+r'/media/[^\s/]+/',r'(?i)(?:gh[pousr]_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9_]{20,})',r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----']
 
 

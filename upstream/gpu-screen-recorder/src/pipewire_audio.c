@@ -1,8 +1,12 @@
+/* Layer modification (2026-11-10): exact PipeWire node selectors for independent role capture. */
 #include "../include/pipewire_audio.h"
 #include "../include/log.h"
 #include "../include/utils.h"
 
 #include <pipewire/pipewire.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <stdint.h>
 #include <pipewire/extensions/metadata.h>
 #include <pipewire/impl-module.h>
 
@@ -60,11 +64,20 @@ static bool requested_link_matches_name_case_insensitive(const gsr_pipewire_audi
     return false;
 }
 
-static bool requested_link_matches_name_case_insensitive_any_type(const gsr_pipewire_audio *self, const gsr_pipewire_audio_requested_link *requested_link, const char *name) {
+static bool requested_link_matches_name_case_insensitive_any_type(const gsr_pipewire_audio *self, const gsr_pipewire_audio_requested_link *requested_link, const char *name, uint32_t node_id) {
     for(int i = 0; i < requested_link->num_outputs; ++i) {
         switch(requested_link->outputs[i].type) {
             case GSR_PIPEWIRE_AUDIO_REQUESTED_TYPE_STANDARD: {
-                if(strcasecmp(requested_link->outputs[i].name, name) == 0)
+                const char *selector = requested_link->outputs[i].name;
+                if(strncmp(selector, "layer-node:", 11) == 0) {
+                    char *end = NULL;
+                    errno = 0;
+                    const unsigned long requested_id = strtoul(selector + 11, &end, 10);
+                    if(selector[11] != '\0' && end && *end == '\0' && errno == 0 && requested_id <= UINT32_MAX && requested_id == node_id)
+                        return true;
+                    break;
+                }
+                if(strcasecmp(selector, name) == 0)
                     return true;
                 break;
             }
@@ -200,7 +213,7 @@ static void gsr_pipewire_audio_create_link(gsr_pipewire_audio *self, const gsr_p
         if(requested_link->output_type == GSR_PIPEWIRE_AUDIO_NODE_TYPE_STREAM_OUTPUT && !gsr_pipewire_audio_node_is_application(output_node))
             continue;
 
-        const bool requested_link_matches_app = requested_link_matches_name_case_insensitive_any_type(self, requested_link, output_node->name);
+        const bool requested_link_matches_app = requested_link_matches_name_case_insensitive_any_type(self, requested_link, output_node->name, output_node->id);
         if(requested_link->inverted) {
             if(requested_link_matches_app)
                 continue;

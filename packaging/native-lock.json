@@ -1,10 +1,4 @@
 {
-  "wf-recorder": {
-    "url": "https://github.com/ammen99/wf-recorder.git",
-    "revision": "c5de47440e8e81c92befb696cb69819cdb3bfe8a",
-    "patch": "patches/wf-recorder-layer.patch",
-    "license": "MIT"
-  },
   "gsr-ui": {
     "url": "https://repo.dec05eba.com/gpu-screen-recorder-ui",
     "revision": "e3560df24b54c61cefe3f6dd34a3238350e31195",

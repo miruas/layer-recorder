@@ -1,12 +1,22 @@
-# Architecture and storage
+# Capture architecture
 
-The native recorder foundation and original GPLv3 history are included at `upstream/gpu-screen-recorder/`. See [UPSTREAM.md](../UPSTREAM.md) for the exact base and modifications.
+Layer 0.7 moves capture supervision, JSON IPC, RAM allocation, incremental segment indexing, replay retention, ordinary-recording spooling and independent-source snapshots into `native/recorder` (Rust). `capture.py`, `daemon.py` and `buffer_storage.py` are compatibility adapters; there is no Python capture backend or automatic wf-recorder fallback.
+
+GSR produces every video and audio track. FFmpeg remains the lossless container-copy/probe tool when saving, and the existing Python editor/export pipeline remains intact. The metadata/configuration bridge is one persistent Python process; it never receives media. The PipeWire graph is one persistent `pw-dump --monitor` stream rather than repeated complete subprocess dumps four times a second.
+
+Status is cached separately from capture commands, so a replay save or encoder flush does not block status queries. The control socket retains newline JSON request/response compatibility, private permissions, singleton locking and existing action names. The queue is bounded; shutdown preserves ordinary recordings.
+
+Each selected display has its own GSR encoder process. Each discovered application/role or microphone group has a GSR audio-only producer. Node selectors preserve voice/media separation; changing nodes retires one generation and starts another without erasing prior media. Audio-only GSR cannot use native replay, so Rust owns a common segmented timeline and bounded tmpfs ring. Ordinary recordings move older **closed** segments to a durable cache spool; replay never silently falls back to disk. First-frame timestamps align streams, and saved `.katman` projects retain version-1 independent media/timing compatibility.
+
+GSR is the authoritative source inventory. Optional compositor adapters enrich logical geometry, application names and shortcuts. Without Hyprland, placement is explicitly synthetic horizontal layout and application naming falls back to Desktop. See [compatibility](GSR_COMPATIBILITY.md) for upstream features and remaining gaps.
+
+## Existing editor and media format reference
 
 ## Data flow
 
 ```text
-Hyprland displays ── GSR / patched wf-recorder ── hardware-encoded segments ─┐
-PipeWire streams ── passive capture links ── FLAC segments ─────────────────┤
+GSR source inventory ── GSR video producers ── hardware-encoded segments ─┐
+PipeWire events ── GSR independent audio producers ── Opus segments ─────────────────┤
                                                                          ↓
                                                          private RAM ring (300s)
                                                                          ↓ save
@@ -49,7 +59,8 @@ Paths loaded from a project must remain inside its project folder. Treat importe
 | `configuration.py` | Defaults, profile generation, strict settings validation |
 | `hardware.py` | GPU discovery, GSR capability parsing, vendor-neutral command planning |
 | `buffer_storage.py` | Private memory filesystem allocation |
-| `capture.py` / `daemon.py` | Capture lifecycle, discovery, ring/spool, save requests |
+| `native/recorder/src` | Rust capture lifecycle, discovery, RAM ring/spool, snapshots and IPC |
+| `capture.py` / `daemon.py` / `buffer_storage.py` | Python compatibility clients / native executable entry points |
 | `audio_identity.py` / `identity.py` | Stream roles and application-only naming |
 | `studio_model.py` | Independent edits, timing and animation |
 | `studio_render.py` | One FFmpeg compositor for frames, playback and export |
@@ -59,4 +70,4 @@ Paths loaded from a project must remain inside its project folder. Treat importe
 
 ## Compatibility boundaries
 
-Capture is integrated with Hyprland/PipeWire; KDE/GNOME/X11 capture is not advertised. GPU Screen Recorder chooses its capture device. Source separation cannot unmix a single upstream audio stream. Motion tracking and speech recognition require review. Project versioning, autosave recovery UI and media relinking are not new features of this release.
+Capture is GSR/PipeWire based, with optional Hyprland integration. KDE/GNOME/X11 session testing remains open. GPU Screen Recorder chooses its capture device. Source separation cannot unmix a single upstream audio stream. Motion tracking and speech recognition require review. Project versioning, autosave recovery UI and media relinking are not new features of this release.

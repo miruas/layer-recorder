@@ -2,24 +2,24 @@
 
 ## Supported environment
 
-Layer capture currently requires Linux, a Hyprland Wayland session, PipeWire and a supported hardware encoder. The native editor and ordinary CPU exports do not require a capture GPU or a running compositor.
+Layer capture requires Linux, GSR-supported capture sources, PipeWire with its PulseAudio compatibility service and a supported hardware encoder. Hyprland enriches geometry, focus naming and global shortcuts but is not required by the capture core. [Compatibility and unverified sessions](GSR_COMPATIBILITY.md). The native editor and ordinary CPU exports do not require a capture GPU or a running compositor.
 
 Use Python 3.12 or newer. Current capture/helper builds target FFmpeg 8.1 or newer. The editor's filter-file handling also supports older FFmpeg builds used in CI. Distribution packages must include the filters/encoders you use: libass, drawtext, vid.stab, libx264/libx265 and optional AV1/VA-API/NVENC.
 
 ## Ready-to-install Arch / CachyOS package
 
-Download the `.pkg.tar.zst` and matching SHA256SUMS from [Releases](https://github.com/miruas/layer-recorder/releases). Version 0.6.0 targets **x86_64 Arch/CachyOS**, with one package for NVIDIA, AMD and Intel. It is not an AppImage or a package for every Linux distribution.
+Download the `.pkg.tar.zst` and matching SHA256SUMS from [Releases](https://github.com/miruas/layer-recorder/releases). Version 0.7.0 targets **x86_64 Arch/CachyOS**, with one package for NVIDIA, AMD and Intel. It is not an AppImage or a package for every Linux distribution.
 
 Keep the system fully updated; partial upgrades are unsupported. Install GPU Screen Recorder through your distribution/AUR workflow first: Layer uses its compatible, system-managed KMS broker for privileged display capture. Install the appropriate vendor drivers from [GPU support](GPU_SUPPORT.md). Then:
 
 ```sh
-sha256sum --check --ignore-missing layer-recorder-0.6.0-SHA256SUMS
-sudo pacman -U ./layer-recorder-0.6.0-1-x86_64.pkg.tar.zst
+sha256sum --check --ignore-missing layer-recorder-0.7.0-SHA256SUMS
+sudo pacman -U ./layer-recorder-0.7.0-1-x86_64.pkg.tar.zst
 layer doctor
 layer ui
 ```
 
-The package contains the compiled Layer GSR engine, patched overlay, Wayland fallback and offline subtitle engine. Runtime dependencies are resolved by pacman; subtitle model weights are an optional separate download (`layer-download-model`). Neither installation nor an update replaces user preferences, records the desktop, or enables services automatically. FFmpeg SONAME dependencies prevent loading helpers against an incompatible ABI.
+The package contains the compiled Layer GSR engine, patched overlay, Rust capture core and offline subtitle engine. Runtime dependencies are resolved by pacman; subtitle model weights are an optional separate download (`layer-download-model`). Neither installation nor an update replaces user preferences, records the desktop, or enables services automatically. FFmpeg SONAME dependencies prevent loading helpers against an incompatible ABI.
 
 For startup, run `systemctl --user enable --now katman.service` and enable replay startup in Settings, or use the GSR bridge. Set up the optional overlay as described in [Integration](INTEGRATION.md).
 
@@ -41,7 +41,7 @@ The recorder source is included as a real source fork. Build it with the command
 Native helper build dependencies include:
 
 ```sh
-sudo pacman -S --needed base-devel git meson ninja cmake pkgconf \
+sudo pacman -S --needed base-devel git meson ninja cmake pkgconf rust \
   wayland wayland-protocols libdrm libglvnd libpulse libx11 libxcomposite \
   libxfixes libxext libxi libxcursor libxrandr libxrender libxkbcommon \
   dbus pango freetype2 libdecor vulkan-headers libva libcap libxdamage
@@ -58,7 +58,7 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e . meson ninja
 python tools/build-native.py gpu-screen-recorder
-python tools/build-native.py wf-recorder
+python tools/build-native.py recorder
 python install.py --profile auto --enable
 ```
 

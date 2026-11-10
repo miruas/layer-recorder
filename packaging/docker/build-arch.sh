@@ -12,8 +12,9 @@ chown -R builder:builder /build /out
 runuser -u builder -- bash -c '
 set -euo pipefail
 cd /build/src
+export CARGO_HOME=/build/cargo
 python3 tools/build-native.py gpu-screen-recorder --reuse
-python3 tools/build-native.py wf-recorder --reuse
+python3 tools/build-native.py recorder
 python3 tools/build-native.py gsr-ui --reuse --prefix /usr/lib/layer-recorder/overlay --destdir /build/overlay
 python3 tools/build-native.py whisper --reuse
 QT_QPA_PLATFORM=offscreen python3 tools/smoke-ui.py

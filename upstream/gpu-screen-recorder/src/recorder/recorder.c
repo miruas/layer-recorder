@@ -1,3 +1,4 @@
+/* Layer modification (2026-11-10): expose audio-only first-frame timestamps for independent-track alignment. */
 #include "../../include/recorder/recorder.h"
 #include "../../include/recorder/error.h"
 #include "../../include/recorder/audio_codec.h"
@@ -148,6 +149,17 @@ static int recorder_setup_container(gsr_recorder *self) {
 
     if(self->file_extension[0] == '\0')
         snprintf(self->file_extension, sizeof(self->file_extension), "%s", self->settings.container_format ? self->settings.container_format : "");
+
+    /* Layer: the segment muxer delegates codec compatibility to its inner container. */
+    if(self->settings.container_format && strcmp(self->settings.container_format, "segment") == 0 && self->settings.ffmpeg_opts) {
+        AVDictionary *segment_options = NULL;
+        if(av_dict_parse_string(&segment_options, self->settings.ffmpeg_opts, "=", ";", 0) >= 0) {
+            const AVDictionaryEntry *format = av_dict_get(segment_options, "segment_format", NULL, 0);
+            if(format && strcmp(format->value, "matroska") == 0)
+                snprintf(self->file_extension, sizeof(self->file_extension), "mkv");
+        }
+        av_dict_free(&segment_options);
+    }
 
     if(!self->audio_only && strcmp(self->file_extension, "mp3") == 0) {
         gsr_log(GSR_LOG_LEVEL_ERROR, "the mp3 container doesn't support video. Record without the -w option to record audio only");
@@ -329,7 +341,13 @@ static int recorder_setup_audio_track(gsr_recorder *self, const gsr_merged_audio
         if(!audio_stream)
             return GSR_ERROR_GENERIC;
 
-        if(gsr_encoder_add_recording_destination(&self->encoder, audio_track->codec_context, self->av_format_context, audio_stream, GSR_RECORDING_FIRST_PTS_CAPTURE_START) == (size_t)-1)
+        const size_t audio_destination_id = gsr_encoder_add_recording_destination(&self->encoder, audio_track->codec_context, self->av_format_context, audio_stream, GSR_RECORDING_FIRST_PTS_CAPTURE_START);
+        if(self->audio_only && self->settings.write_first_frame_ts && audio_stream_index == 0 && audio_destination_id != (size_t)-1) {
+            char ts_filepath[PATH_MAX + 4];
+            snprintf(ts_filepath, sizeof(ts_filepath), "%s.ts", self->settings.filename);
+            gsr_encoder_set_recording_destination_first_frame_ts_filepath(&self->encoder, audio_destination_id, ts_filepath);
+        }
+        if(audio_destination_id == (size_t)-1)
             gsr_log(GSR_LOG_LEVEL_ERROR, "added too many audio sources");
     }
 

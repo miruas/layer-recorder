@@ -28,6 +28,7 @@
 
 static void list_system_info(bool wayland) {
     printf("display_server|%s\n", wayland ? "wayland" : "x11");
+    puts("layer_audio_node_selector|yes");
     bool supports_app_audio = false;
 #ifdef GSR_APP_AUDIO
     supports_app_audio = pulseaudio_server_is_pipewire();
@@ -270,7 +271,7 @@ int info_command(void *userdata) {
     printf("gsr_version|%s\n", GSR_VERSION);
     /* Layer fork provenance; retain the upstream version for CLI compatibility. */
     puts("fork_name|Layer");
-    puts("fork_version|0.6.0");
+    puts("fork_version|0.7.0");
     puts("upstream_revision|1d4946a16139b446e6308f741e9ba99f2ed5b3a7");
     puts("section=gpu_info");
     list_gpu_info(&windowing.egl);

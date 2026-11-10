@@ -38,3 +38,9 @@ Optional native sources are pinned in `packaging/native-lock.json`. Patches are 
 ## Source-fork validation (0.5.1)
 
 All65 local tests passed with hardware exports enabled after importing the official GSR6.1.7 history. Additional checks verify GPL-3.0-only metadata, the preserved upstream ancestor, default local-fork selection and capability provenance. The in-tree native recorder was compiled and produced a7.88sec live recording without capture warnings. The native `--info` output identifies Layer0.5.1, GSR6.1.7 and the exact upstream base commit. Source and wheel packages were built; source distributions include the recorder's native source and license. The GitHub checkout fetches full history so CI can verify ancestry.
+
+## 0.7 Rust GSR-only migration
+
+Run `cargo test --locked --manifest-path native/recorder/Cargo.toml`, build the core (`python tools/build-native.py recorder`), then run the Python suite. Rust tests cover private tmpfs allocation/symlink refusal, incremental graph/segment parsing, role precedence, retired-source windows, disk spooling and real FFmpeg concatenation of RAM plus spool. Python socket tests launch the real Rust daemon with explicitly synthetic CPU-generated pixels: idempotent bridge states, normal recording plus replay, save/reload preservation, shutdown saving, malformed requests and status responsiveness. They never capture the desktop.
+
+A separate isolated live run verified actual NVIDIA GSR HEVC display capture and GSR Opus application/microphone segments, with independent version-1 project media, no capture warning and no Hyprland API environment. This does not certify other compositor sessions or physical AMD/Intel hardware under the new core. No new multi-hour soak is claimed.

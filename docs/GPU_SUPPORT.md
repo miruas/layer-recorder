@@ -6,7 +6,7 @@ Layer has one source tree with automatic detection and four configuration profil
 
 **GPU Screen Recorder** handles an output directly when it advertises that output and the requested GPU profile matches its detected capture GPU. Layer asks for GPU encoding and disables CPU fallback. GPU Screen Recorder chooses the device associated with capture; Layer does not promise arbitrary cross-GPU GSR encoding.
 
-**The patched wf-recorder helper** handles other outputs or an explicitly selected Wayland backend. NVIDIA uses `h264_nvenc`, `hevc_nvenc` or `av1_nvenc`. AMD and Intel use the corresponding VA-API encoders and an available matching render node. Source timestamps and closed segment lists keep independent media aligned.
+**The GSR helper** handles other outputs or an explicitly selected Wayland backend. NVIDIA uses `h264_nvenc`, `hevc_nvenc` or `av1_nvenc`. AMD and Intel use the corresponding VA-API encoders and an available matching render node. Source timestamps and closed segment lists keep independent media aligned.
 
 Cross-GPU compositor/encoder setups may need `wf_no_dmabuf: true`; this uses a frame-copy path followed by hardware encoding. It is not a zero-copy performance claim. The helper patch initializes hardware filter contexts before FFmpeg initializes `hwupload`, fixing current-FFmpeg VA-API capture.
 
@@ -33,4 +33,8 @@ A missing explicit vendor/device fails clearly. `render_device` applies to VA-AP
 
 This version was tested with real NVIDIA capture/NVENC exports and real AMD VA-API H.264/HEVC exports. AMD Wayland VA-API capture produced a playable independent-source project without capture warnings. Intel profile/device selection and command paths are tested, but physical Intel hardware validation has not been performed. AV1 availability depends on generation; the tested AMD device did not advertise AV1 encoding, so AMD AV1 is not claimed as hardware-verified.
 
-Upstream references: [GPU Screen Recorder](https://repo.dec05eba.com/gpu-screen-recorder), [wf-recorder hardware encoding](https://github.com/ammen99/wf-recorder#readme), [FFmpeg encoder documentation](https://ffmpeg.org/ffmpeg-codecs.html).
+Upstream references: [GPU Screen Recorder](https://repo.dec05eba.com/gpu-screen-recorder), [FFmpeg encoder documentation](https://ffmpeg.org/ffmpeg-codecs.html).
+
+## Rust GSR-only core in 0.7
+
+The old wf-recorder backend is removed. Capture profiles validate the GPU GSR advertises; they do not choose an arbitrary cross-GPU encoder. Explicit portal capture is the permission-based alternative for sources absent from GSR direct inventory. Older AMD VA-API/export checks remain useful baseline evidence, but physical AMD/Intel validation of the new Rust capture path is still open. See [GSR compatibility](GSR_COMPATIBILITY.md).

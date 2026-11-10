@@ -39,4 +39,8 @@ For an explicit system recorder instead, set `gsr_binary` to `gpu-screen-recorde
 
 Fetch the selected official tag into a separate upstream ref, inspect its changes/license, then merge it with `git subtree pull --prefix=upstream/gpu-screen-recorder upstream <selected-tag>` without squashing history. Resolve Layer's small native changes deliberately, update the recorded upstream revision, asset provenance and native lock, rebuild and test capture. Do not overwrite upstream copyright notices or re-import local configuration/build products.
 
-Third-party MIT components such as wf-recorder and whisper.cpp retain their own license texts. GPLv3 metadata does not replace those notices. Earlier standalone Layer commits are preserved in history; the fork distribution from0.5.1 uses GPL-3.0-only.
+Third-party MIT components such as whisper.cpp retain their own license texts. GPLv3 metadata does not replace those notices. Earlier standalone Layer commits are preserved in history; the fork distribution from 0.5.1 uses GPL-3.0-only.
+
+## 0.7 independent audio additions
+
+The Rust-owned GSR-only pipeline adds exact `app:layer-node:<id>` PipeWire selectors, audio-only first-frame timestamp sidecars, and inner Matroska format recognition for segmented audio codec selection. Modified native files retain dated notices. The fork keeps normal upstream capture modes; Layer exposes a documented subset.

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0
+
+- Rust capture daemon, private RAM allocator, segment retention/spool and independent-source snapshots.
+- GSR-only video and audio producers; removed automatic wf-recorder fallback and pw-record/FLAC producer pipeline.
+- Event-driven PipeWire discovery, bounded control queue and responsive cached status during saves.
+- Optional Hyprland adapters and explicit GSR portal/X11-window/camera capture targets, with documented validation gaps.
+- Fork extensions for exact PipeWire audio-node selection, audio timestamps and correct Opus selection in segmented Matroska.
+- Preserved native editor, JSON socket and version-1 project compatibility.
+
+
 ## 0.6.0
 
 - Native Recording, Replay, Shortcuts and GSR Integration settings.

@@ -17,14 +17,15 @@ The default file is `${XDG_CONFIG_HOME:-~/.config}/katman/settings.json`. `LAYER
 | `gsr_sync` | `false` | Selectively sync capture codec and replay length into existing GSR preferences on Save. |
 | `auto_replay` | `false` | Start replay when the capture service starts. |
 | `gpu_vendor` | `auto` | `auto`, `nvidia`, `amd`, `intel`. An explicit missing vendor fails. |
-| `capture_backend` | `auto` | `auto`, `gsr`, `wf-recorder`. Auto prefers compatible direct GSR capture. |
+| `capture_backend` | `auto` | `auto` or `gsr`; both use GSR exclusively. |
+| `capture_targets` | `[]` | Empty: every GSR-enumerated monitor. Explicit individual monitor names, `portal`, X11 numeric window ID / `focused`, or V4L2 device path. Advanced targets retain upstream requirements; no combined `|` targets. |
 | `capture_codec` | `h264` | `h264`, `hevc`, `av1`; requires hardware support. |
 | `render_device` | `auto` | VA-API render node, or `/dev/dri/renderD<number>`. Used for AMD/Intel. |
-| `wf_no_dmabuf` | `false` | Force the helper's frame-copy path; useful for cross-GPU import problems. Encoding remains hardware accelerated. |
+| `wf_no_dmabuf` | `false` | Deprecated; must remain false. The wf-recorder fallback was removed. |
 | `export_codec` | `libx264` | Initial encoder selection in the native export dialog. See supported values below. |
 | `export_quality` | `20` | Initial quality value, 0–51; lower means higher quality. Encoder scales differ. |
 | `gsr_binary` | `auto` | Use the local Layer GSR fork. An explicit executable name/path opts into a system/custom recorder. |
-| `wf_recorder_binary` | empty | Optional explicit path/name of the patched helper; empty uses the local build. |
+| `wf_recorder_binary` | empty | Deprecated; must remain empty. |
 | `speech_binary` | empty | Optional whisper.cpp CLI path; empty uses the local speech build. |
 | `speech_model` | empty | Optional local ggml model path; empty uses the downloaded model in the user cache, then the legacy `speech/ggml-base.bin`. |
 
@@ -44,7 +45,7 @@ Capture changes apply on the next engine start. Save an ordinary recording and a
 
 There is no disk fallback for replay. Layer requires a private memory-backed `/dev/shm` directory and checks free space. The ring retains the configured buffer duration plus segment safety margin. Ordinary recordings retain older closed segments on disk so recording duration does not grow the RAM ring indefinitely. Logs/metadata and the OS can add overhead.
 
-At 18000 kbps, one video stream is approximately 675 MB for five minutes before audio and overhead. Multiple displays and FLAC audio add usage. Monitor your actual memory/storage for the chosen setup.
+At 18000 kbps, one video stream is approximately 675 MB for five minutes before audio and overhead. Multiple displays and independent Opus audio add usage. Monitor your actual memory/storage for the chosen setup.
 
 ## Themes
 

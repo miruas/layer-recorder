@@ -17,6 +17,7 @@
   "gsr_sync": false,
   "gpu_vendor": "amd",
   "capture_backend": "auto",
+  "capture_targets": [],
   "capture_codec": "h264",
   "render_device": "auto",
   "wf_no_dmabuf": false,

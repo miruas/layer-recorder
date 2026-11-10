@@ -4,15 +4,17 @@ A **GPL-3.0-only source fork of GPU Screen Recorder**, with a native independent
 
 Layer is a native Linux recorder and independent-track video editor. Capture displays and application audio separately, keep the last minute or five minutes in RAM, then decide which screens and sounds belong in the final video.
 
-Layer supports NVIDIA NVENC and AMD/Intel VA-API paths. It is a PySide6 desktop application, not a browser interface. Capture currently targets **Hyprland on Wayland**; the editor can open existing projects without Hyprland.
+Layer supports NVIDIA NVENC and AMD/Intel VA-API paths. It is a PySide6 desktop application, not a browser interface. Capture now uses a **Rust GSR-only core**. GSR discovers the sources; Hyprland geometry, application naming and shortcuts are optional adapters. Other desktop/session paths have explicit verification limits in the [compatibility matrix](docs/GSR_COMPATIBILITY.md).
+
+[GSR features, Layer gaps and Hyprland separation](docs/GSR_COMPATIBILITY.md)
 
 ## GPU support
 
-| GPU | Display capture | Wayland fallback / virtual displays | Export | Verification |
+| GPU | Display capture | Virtual / permission-based capture | Export | Verification |
 | --- | --- | --- | --- | --- |
-| NVIDIA | GPU Screen Recorder, native GPU encoder | NVENC | H.264, HEVC, AV1 through NVENC | Real capture and hardware exports tested |
-| AMD | GPU Screen Recorder, native GPU encoder | VA-API | H.264, HEVC, AV1 when supported by the GPU/driver | Real VA-API capture and H.264/HEVC exports tested |
-| Intel | GPU Screen Recorder, native GPU encoder | VA-API | H.264, HEVC, AV1 when supported by the GPU/driver | Command/configuration paths tested; physical Intel verification remains open |
+| NVIDIA | GPU Screen Recorder, native GPU encoder | GSR portal, when available | H.264, HEVC, AV1 through NVENC | Real capture and hardware exports tested |
+| AMD | GPU Screen Recorder, native GPU encoder | GSR portal, when available | H.264, HEVC, AV1 when supported by the GPU/driver | Real VA-API capture and H.264/HEVC exports tested |
+| Intel | GPU Screen Recorder, native GPU encoder | GSR portal, when available | H.264, HEVC, AV1 when supported by the GPU/driver | Command/configuration paths tested; physical Intel verification remains open |
 
 Codec availability depends on the GPU generation, driver and FFmpeg build. A compiled encoder is not proof that the installed GPU supports it. Layer reports unsupported selections rather than silently changing capture to CPU encoding. CPU H.264, HEVC and AV1 exports are also available.
 
@@ -38,7 +40,7 @@ See [GPU support and driver setup](docs/GPU_SUPPORT.md) for profiles, limitation
 [**Download the ready-to-install release**](https://github.com/miruas/layer-recorder/releases/latest) for **Arch / CachyOS x86_64**. One package supports NVIDIA, AMD and Intel, subject to GPU/driver capabilities. It includes compiled capture helpers, the patched GSR overlay and offline subtitle engine. No compilation is required for the package; install the required vendor drivers and system GSR KMS broker first.
 
 ```sh
-sudo pacman -U ./layer-recorder-0.6.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./layer-recorder-0.7.0-1-x86_64.pkg.tar.zst
 layer ui
 ```
 
@@ -48,7 +50,7 @@ Native **Settings** provides H.264 / H.265 / AV1 selection, export encoder, RAM 
 
 ## Source quick start
 
-Use a current Arch-based system with Python 3.12+, PipeWire, Hyprland, FFmpeg and GPU Screen Recorder. Capture helpers target current FFmpeg APIs; see [installation](docs/INSTALLATION.md) for exact dependencies and other distributions.
+Use a current Arch-based system with Python 3.12+, PipeWire, FFmpeg and GPU Screen Recorder. Capture helpers target current FFmpeg APIs; see [installation](docs/INSTALLATION.md) for exact dependencies and other distributions.
 
 ```sh
 git clone https://github.com/miruas/layer-recorder.git
@@ -57,7 +59,7 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e . meson ninja
 python tools/build-native.py gpu-screen-recorder
-python tools/build-native.py wf-recorder
+python tools/build-native.py recorder
 python install.py --profile auto --enable
 ```
 

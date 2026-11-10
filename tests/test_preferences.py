@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
-import copy,json,tempfile,threading,unittest
+import copy,json,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
 from katman.configuration import profile,validate_config
@@ -44,12 +44,11 @@ class Preferences(unittest.TestCase):
             cfg=profile('nvidia');cfg.update(capture_codec='hevc',buffer=600,gsr_sync=True)
             with patch('katman.gsr_integration.config_path',return_value=file),patch.dict('os.environ',{'XDG_STATE_HOME':str(root/'state')}),patch('katman.gsr_integration.shutil.which',return_value=None):backup=gsr.update(cfg,{'overlay':'Ctrl+Alt+Z'})
             value=json.loads(file.read_text());self.assertEqual(value['main']['unrelated'],'keep');self.assertEqual(value['record']['record_options']['audio_codec'],'opus');self.assertEqual(value['replay']['time'],600);self.assertEqual(value['record']['record_options']['codec'],'hevc');self.assertFalse(value['record']['record_options']['show_notifications']);self.assertEqual(json.loads(backup.read_text()),original)
-    def test_apply_preserves_replay_before_restart_and_never_stops_normal_recording(self):
-        r=Recorder.__new__(Recorder);r.lock=threading.RLock();r.record_start=None;r.replay=True;r.running=True;r.origin=0;r.buffer_limit=300;events=[]
-        r._snapshot=lambda *args:events.append('save') or 'preserved.katman';r._stop=lambda:events.append('stop');r._start=lambda:events.append('start');r.status=lambda:{'replay':r.replay}
-        result=r.reload_settings();self.assertEqual(events,['save','stop','start']);self.assertEqual(result['preserved_project'],'preserved.katman');events.clear();r.record_start=1
-        with self.assertRaises(RuntimeError):r.reload_settings()
-        self.assertEqual(events,[])
+    def test_reload_settings_forwards_the_facade_request(self):
+        r=Recorder.__new__(Recorder)
+        with patch('katman.capture.request',return_value={'ok':True}) as request:
+            self.assertEqual(r.reload_settings(),{'ok':True})
+            request.assert_called_once_with('reload-settings')
     def test_save_presets_route_through_the_shared_bridge(self):
         from katman import bridge
         cfg=profile('auto');cfg.update(buffer=600,replay_short=30,replay_long=180)
