@@ -44,7 +44,7 @@ class SettingsDialog(QDialog):
             edit=QKeySequenceEdit(QKeySequence(self.gsr_original.get(action,'')));edit.setMaximumSequenceLength(1);edit.setEnabled(bool(self.gsr_data));edit.setAccessibleName(title+' shortcut');self.gsr_fields[action]=edit;integration.addRow(title,edit)
         self.text(integration,'Linked Layer saves use your short/long presets; GSR keeps its own one-minute/full-buffer video saves. Codec/replay changes take effect when GSR capture restarts; shared-key updates reload immediately with the bundled overlay.')
         if not self.gsr_data:self.text(integration,'Open GPU Screen Recorder once to create its settings, then reopen this page to connect it.')
-        open_gsr=QPushButton('Open GSR overlay');open_gsr.setEnabled(bool(shutil.which('gsr-ui-cli')));open_gsr.clicked.connect(self.open_overlay);integration.addRow(open_gsr)
+        open_gsr=QPushButton('Open GSR overlay');open_gsr.setEnabled(bool(gsr.cli()));open_gsr.clicked.connect(self.open_overlay);integration.addRow(open_gsr)
         self.text(integration,'Layer follows an available system theme-manager live; otherwise it uses its built-in native palette. No system theme files are changed.')
         buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel);buttons.button(QDialogButtonBox.Save).setText('Save changes');buttons.button(QDialogButtonBox.Save).setObjectName('primary');buttons.button(QDialogButtonBox.Save).setIcon(QIcon());buttons.button(QDialogButtonBox.Cancel).setIcon(QIcon());buttons.accepted.connect(self.save);buttons.rejected.connect(self.reject);outer.addWidget(buttons)
     def page(self,title):
@@ -62,7 +62,7 @@ class SettingsDialog(QDialog):
     def browse(self,field):
         selected=QFileDialog.getExistingDirectory(self,'Recording folder',field.text())
         if selected:field.setText(selected)
-    def open_overlay(self):subprocess.Popen(['gsr-ui-cli','toggle-show'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    def open_overlay(self):subprocess.Popen([gsr.cli(),'toggle-show'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     def save(self):
         try:
             cfg=copy.deepcopy(self.cfg)

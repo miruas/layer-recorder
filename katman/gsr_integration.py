@@ -2,12 +2,17 @@
 """Selective GSR preference integration with private backups and no title data."""
 import json,os,shutil,subprocess,time
 from pathlib import Path
-from .common import CONFIG,atomic_json
+from .common import APP,CONFIG,atomic_json
 from .shortcuts import parse
 
 HOTKEYS={'overlay':('main','show_hide_hotkey'),'record':('record','start_stop_hotkey'),'replay':('replay','start_stop_hotkey'),'save-1':('replay','save_1_min_hotkey'),'save-5':('replay','save_hotkey')}
 LABELS={'overlay':'Show / hide GSR overlay','record':'GSR start / stop recording','replay':'GSR replay on / off','save-1':'GSR one-minute save','save-5':'GSR full-buffer save'}
 KEYS=json.loads((Path(__file__).parent/'assets/gsr-keys.json').read_text())
+
+
+def cli():
+    local=APP/'overlay/bin/gsr-ui-cli'
+    return str(local) if local.is_file() else shutil.which('gsr-ui-cli')
 
 
 def config_path():return CONFIG.parent/'gpu-screen-recorder/config_ui'
@@ -53,5 +58,5 @@ def update(layer,bindings=None):
     folder=Path(os.environ.get('XDG_STATE_HOME',Path.home()/'.local/state'))/'layer/backups';folder.mkdir(parents=True,exist_ok=True,mode=0o700)
     backup=folder/('gsr-config-'+str(time.time_ns())+'.json');shutil.copy2(config_path(),backup);backup.chmod(0o600)
     atomic_json(config_path(),data)
-    if shutil.which('gsr-ui-cli'):subprocess.run(['gsr-ui-cli','reload-config'],capture_output=True,timeout=5)
+    if cli():subprocess.run([cli(),'reload-config'],capture_output=True,timeout=5)
     return backup

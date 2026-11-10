@@ -26,6 +26,17 @@ class Preferences(unittest.TestCase):
         with patch('katman.shortcuts.inventory',return_value=bindings),patch('katman.shortcuts.subprocess.run',return_value=subprocess.CompletedProcess([],0,'ok','')) as run:
             shortcuts.sync(cfg)
         self.assertEqual(len(run.call_args_list),2);self.assertEqual(run.call_args_list[0].args[0][2],'unbind');self.assertIn('SUPER',run.call_args_list[1].args[0][3]);self.assertIn('P, exec,',run.call_args_list[1].args[0][3])
+    def test_lua_shortcuts_fall_back_and_are_recognized_without_rebinding(self):
+        import subprocess
+        cfg=profile('auto');cfg['shortcuts']={key:'' for key in shortcuts.ACTIONS};cfg['shortcuts']['ui']='Meta+Alt+P'
+        responses=[subprocess.CompletedProcess([],0,"keyword can't work with non-legacy parsers. Use eval.",''),subprocess.CompletedProcess([],0,'ok','')]
+        with patch('katman.shortcuts.inventory',return_value=[]),patch('katman.shortcuts.subprocess.run',side_effect=responses) as run:
+            shortcuts.sync(cfg)
+        script=run.call_args_list[1].args[0];self.assertEqual(script[1],'eval');self.assertIn('allow_input_capture=true',script[2]);self.assertIn('Layer shortcut: ',script[2])
+        binding={'modmask':72,'key':'P','dispatcher':'__lua','arg':'123','description':'Layer shortcut: '+shortcuts.command('ui')}
+        with patch('katman.shortcuts.inventory',return_value=[binding]),patch('katman.shortcuts.subprocess.run') as run:
+            shortcuts.sync(cfg);run.assert_not_called()
+
     def test_gsr_keys_round_trip_and_settings_preserve_unknown_fields(self):
         for sequence in ('Alt+Z','Alt+F11','Ctrl+Alt+P','Meta+Shift+F9'):self.assertEqual(gsr.encode(gsr.decode(gsr.encode(sequence))),gsr.encode(sequence))
         with tempfile.TemporaryDirectory() as directory:
