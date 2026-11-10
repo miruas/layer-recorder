@@ -30,7 +30,13 @@ def inventory():
     return json.loads(p.stdout)
 
 
-def owned(binding):return binding.get('dispatcher')=='exec' and binding.get('arg') in {value for action in ACTIONS for value in (command(action),'layer '+action,'/usr/bin/layer '+action)}
+def bound_command(binding):
+    if binding.get('dispatcher')=='exec':return binding.get('arg')
+    if binding.get('dispatcher')=='__lua' and binding.get('description','').startswith('Layer shortcut: '):return binding['description'][16:]
+    return None
+
+
+def owned(binding):return bound_command(binding) in {value for action in ACTIONS for value in (command(action),'layer '+action,'/usr/bin/layer '+action)}
 def signature(binding):return int(binding.get('modmask',0)),str(binding.get('key','')).upper()
 def chord(pair):return ' '.join(name for name,value in MODS.items() if pair[0]&value)+', '+pair[1]
 
@@ -48,16 +54,22 @@ def sync(config):
     desired={parse(value):action for action,value in config['shortcuts'].items() if value} if config['shortcuts_enabled'] else {}
     def keyword(name,value):
         p=subprocess.run(['hyprctl','keyword',name,value],capture_output=True,text=True,timeout=3)
+        if "keyword can't work with non-legacy parsers" in p.stdout:
+            parts=value.split(', ',3);keys=' + '.join(parts[0].split()+[parts[1]])
+            quote=lambda text:json.dumps(text,ensure_ascii=False)
+            script=('hl.unbind('+quote(keys)+')') if name=='unbind' else ('hl.bind('+quote(keys)+', hl.dsp.exec_cmd('+quote(parts[3])+'), {description='+quote('Layer shortcut: '+parts[3])+', allow_input_capture=true})')
+            p=subprocess.run(['hyprctl','eval',script],capture_output=True,text=True,timeout=3)
+            if p.stdout.strip()!='ok':raise RuntimeError('Could not apply a Layer shortcut: '+p.stderr.strip()+p.stdout.strip())
         if p.returncode:raise RuntimeError('Could not apply a Layer shortcut: '+p.stderr.strip()+p.stdout.strip())
     mine={signature(b) for b in bindings if owned(b)}
     for pair in mine:
         entries=[b for b in bindings if signature(b)==pair]
         if any(not owned(b) for b in entries):continue
         action=desired.get(pair)
-        if len(entries)==1 and action and entries[0]['arg']==command(action):continue
+        if len(entries)==1 and action and bound_command(entries[0])==command(action):continue
         keyword('unbind',chord(pair));bindings=[b for b in bindings if signature(b)!=pair]
     for pair,action in desired.items():
-        if not any(signature(b)==pair and owned(b) and b['arg']==command(action) for b in bindings):keyword('bind',chord(pair)+', exec, '+command(action))
+        if not any(signature(b)==pair and owned(b) and bound_command(b)==command(action) for b in bindings):keyword('bind',chord(pair)+', exec, '+command(action))
 
 
 class Watcher:

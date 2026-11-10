@@ -208,8 +208,9 @@ class Window(EditorTools, QMainWindow):
         row.addWidget(label('Layer','title'));row.addSpacing(24)
         self.record_button=self.tool('Record','record',lambda:self.capture_action('toggle-record'),'Start / stop recording · Super+Alt+F9')
         self.replay_button=self.tool('Enable replay','replay',lambda:self.capture_action('toggle-replay'),'Enable / disable replay · Super+Alt+F10')
-        self.save1_button=self.tool('1 min','save',lambda:self.capture_action('save-replay',seconds=60),'Save the last minute · Super+Alt+F7',True)
-        self.save5_button=self.tool('5 min','save',lambda:self.capture_action('save-replay',seconds=300),'Save the last five minutes · Super+Alt+F8',True)
+        self.save1_button=self.tool('1 min','save',lambda:self.save_preset('replay_short'),'Save the last minute · Super+Alt+F7',True)
+        self.save5_button=self.tool('5 min','save',lambda:self.save_preset('replay_long'),'Save the last five minutes · Super+Alt+F8',True)
+        self.refresh_capture_preferences()
         for b in (self.record_button,self.replay_button,self.save1_button,self.save5_button):row.addWidget(b)
         row.addStretch()
         self.record_state=label('Ready to capture','status');row.addWidget(self.record_state)
@@ -686,11 +687,22 @@ class Window(EditorTools, QMainWindow):
     def show_error(self,error):
         self.error_text.setText(str(error)[-2200:]);self.error_bar.show()
 
+    def save_preset(self,key):
+        self.capture_action('save-replay',seconds=settings()[key])
+
+    def refresh_capture_preferences(self):
+        cfg=settings()
+        for button,key,action in [(self.save1_button,'replay_short','save-1'),(self.save5_button,'replay_long','save-5')]:
+            seconds=cfg[key];button.setText(f'{seconds//60} min' if seconds%60==0 else f'{seconds} sec')
+            button.setToolTip(f'Save the last {seconds} seconds'+(' · '+cfg['shortcuts'][action] if cfg['shortcuts_enabled'] and cfg['shortcuts'][action] else ''))
+        for button,action,text in [(self.record_button,'record','Start / stop recording'),(self.replay_button,'replay','Enable / disable replay')]:
+            button.setToolTip(text+(' · '+cfg['shortcuts'][action] if cfg['shortcuts_enabled'] and cfg['shortcuts'][action] else ''))
+
     def show_settings(self):
         from .settings_dialog import SettingsDialog
         dialog=SettingsDialog(self)
         if dialog.exec():
-            self.refresh_archive()
+            self.refresh_archive();self.refresh_capture_preferences()
             if dialog.apply_now and not self.test_mode:self.start_task(lambda task:request('reload-settings'),lambda _:self.poll(),self.show_error)
         dialog.deleteLater()
 
@@ -699,8 +711,8 @@ class Window(EditorTools, QMainWindow):
         menu=QMenu(self)
         for text,callback in [("Open library",self.show_window),("Start / stop recording",lambda:self.capture_action("toggle-record")),
                               ("Enable / disable replay",lambda:self.capture_action("toggle-replay")),
-                              ("Save the last minute",lambda:self.capture_action("save-replay",seconds=60)),
-                              ("Save the last 5 minutes",lambda:self.capture_action("save-replay",seconds=300))]:
+                              ("Save short replay",lambda:self.save_preset("replay_short")),
+                              ("Save long replay",lambda:self.save_preset("replay_long"))]:
             action=menu.addAction(text);action.triggered.connect(callback)
         menu.addSeparator();menu.addAction("Stop capture and quit",self.shutdown)
         self.tray.setContextMenu(menu);self.tray.activated.connect(lambda reason:self.show_window() if reason==QSystemTrayIcon.Trigger else None)
