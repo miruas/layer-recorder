@@ -7,6 +7,7 @@ permissions:
 jobs:
   tests:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
       matrix:
         python: ['3.12', '3.13', '3.14']
@@ -16,14 +17,14 @@ jobs:
       XDG_CACHE_HOME: /tmp/layer-ci-cache
       XDG_RUNTIME_DIR: /tmp/layer-ci-runtime
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - name: Install media and Qt runtime dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-noto-core libegl1 libopengl0 libxcb-cursor0
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends ffmpeg fonts-noto-core libegl1 libopengl0 libxcb-cursor0
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
       - name: Install Python dependencies
