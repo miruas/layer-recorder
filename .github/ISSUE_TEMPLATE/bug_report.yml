@@ -1,0 +1,22 @@
+name: Bug report
+description: Report a reproducible recorder or editor problem.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe expected behavior and exact reproduction steps. Do not attach private recordings or full home configuration.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Distribution, compositor, GPU vendor/model, driver, FFmpeg and GSR versions. Review layer doctor output before sharing it.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant error
+      description: Paste only a short sanitized error. Remove personal paths, application names and media titles as needed.

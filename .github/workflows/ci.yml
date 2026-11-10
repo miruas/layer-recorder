@@ -1,0 +1,45 @@
+name: Test and package
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python: ['3.12', '3.13', '3.14']
+    env:
+      QT_QPA_PLATFORM: offscreen
+      XDG_CONFIG_HOME: /tmp/layer-ci-config
+      XDG_CACHE_HOME: /tmp/layer-ci-cache
+      XDG_RUNTIME_DIR: /tmp/layer-ci-runtime
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install media and Qt runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-noto-core libegl1 libopengl0 libxcb-cursor0
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+      - name: Install Python dependencies
+        run: python -m pip install . build
+      - name: Audit public source tree
+        run: python tools/check-public-tree.py
+      - name: Validate all GPU configuration profiles
+        run: |
+          for profile in auto nvidia amd intel; do
+            LAYER_CONFIG="examples/config.$profile.json" python -m katman config validate
+          done
+      - name: Compile and test
+        run: |
+          python -m compileall -q katman tools install.py
+          python -m unittest discover -s tests -v
+      - name: Native interface smoke test
+        run: python tools/smoke-ui.py
+      - name: Build source and wheel packages
+        run: python -m build

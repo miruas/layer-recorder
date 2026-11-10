@@ -1,0 +1,19 @@
+{
+  "wf-recorder": {
+    "url": "https://github.com/ammen99/wf-recorder.git",
+    "revision": "c5de47440e8e81c92befb696cb69819cdb3bfe8a",
+    "patch": "patches/wf-recorder-layer.patch",
+    "license": "MIT"
+  },
+  "gsr-ui": {
+    "url": "https://repo.dec05eba.com/gpu-screen-recorder-ui",
+    "revision": "e3560df24b54c61cefe3f6dd34a3238350e31195",
+    "patch": "patches/gsr-ui-layer.patch",
+    "license": "GPL-3.0-only"
+  },
+  "whisper": {
+    "url": "https://github.com/ggml-org/whisper.cpp.git",
+    "revision": "727d3e7666485e12450746b523bfb4e7f057cc5e",
+    "license": "MIT"
+  }
+}

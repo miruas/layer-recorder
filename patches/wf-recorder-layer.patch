@@ -1,0 +1,138 @@
+diff --git a/src/frame-writer.cpp b/src/frame-writer.cpp
+index 34d16d6..2e65be9 100644
+--- a/src/frame-writer.cpp
++++ b/src/frame-writer.cpp
+@@ -191,22 +191,24 @@ AVPixelFormat FrameWriter::handle_buffersink_pix_fmt(const AVCodec *codec)
+ 
+     auto in_fmt = get_input_format();
+ 
++    const AVPixelFormat *formats = nullptr;
++    avcodec_get_supported_config(nullptr, codec, AV_CODEC_CONFIG_PIX_FORMAT, 0, reinterpret_cast<const void **>(&formats), nullptr);
+     /* For codecs such as rawvideo no supported formats are listed */
+-    if (!codec->pix_fmts)
++    if (!formats)
+         return in_fmt;
+ 
+     /* If the codec supports getting the appropriate RGB format
+      * directly, we want to use it since we don't have to convert data */
+-    if (is_fmt_supported(in_fmt, codec->pix_fmts))
++    if (is_fmt_supported(in_fmt, formats))
+         return in_fmt;
+ 
+     /* Choose the format supported by the codec which best approximates the
+      * input fmt. */
+     AVPixelFormat best_format = AV_PIX_FMT_NONE;
+-    for (int i = 0; codec->pix_fmts[i] != AV_PIX_FMT_NONE; i++) {
++    for (int i = 0; formats[i] != AV_PIX_FMT_NONE; i++) {
+         int loss = 0;
+         best_format = av_find_best_pix_fmt_of_2(best_format,
+-            codec->pix_fmts[i], in_fmt, false, &loss);
++            formats[i], in_fmt, false, &loss);
+     }
+     return best_format;
+ }
+@@ -381,41 +383,30 @@ void FrameWriter::init_video_filters(const AVCodec *codec)
+     // The 'out' of filter_graph is the input of the Sink buffer
+     //
+ 
+-    AVFilterInOut *outputs = avfilter_inout_alloc();
+-    outputs->name       = av_strdup("in");
+-    outputs->filter_ctx = this->videoFilterSourceCtx;
+-    outputs->pad_idx    = 0;
+-    outputs->next       = NULL;
+-
+-    AVFilterInOut *inputs  = avfilter_inout_alloc();
+-    inputs->name       = av_strdup("out");
+-    inputs->filter_ctx = this->videoFilterSinkCtx;
+-    inputs->pad_idx    = 0;
+-    inputs->next       = NULL;
+-
+-    if (!outputs->name || !inputs->name) {
+-        std::cerr << "Failed to parse allocate inout filter links" << std::endl;
+-        exit(-1);
++    // FFmpeg may initialize hwupload during parse_ptr. Create filters first,
++    // attach the selected VA-API device, then initialize and connect the graph.
++    AVFilterGraphSegment *segment = nullptr;
++    AVFilterInOut *inputs = nullptr, *outputs = nullptr;
++    const std::string filter = "[in]" + params.video_filter + "[out]";
++    err = avfilter_graph_segment_parse(this->videoFilterGraph, filter.c_str(), 0, &segment);
++    if (err >= 0) err = avfilter_graph_segment_create_filters(segment, 0);
++    if (err >= 0 && this->hw_device_context) {
++        for (unsigned i = 0; i < this->videoFilterGraph->nb_filters; ++i) {
++            auto *ctx = this->videoFilterGraph->filters[i];
++            if (!ctx->hw_device_ctx) ctx->hw_device_ctx = av_buffer_ref(this->hw_device_context);
++        }
+     }
+-
+-    std::cerr << "Using video filter: " << params.video_filter << std::endl;
+-
+-    err = avfilter_graph_parse_ptr(this->videoFilterGraph,
+-        params.video_filter.c_str(), &inputs, &outputs, NULL);
++    if (err >= 0) err = avfilter_graph_segment_apply(segment, 0, &inputs, &outputs);
++    if (err >= 0 && inputs && outputs && !inputs->next && !outputs->next) {
++        err = avfilter_link(this->videoFilterSourceCtx, 0, inputs->filter_ctx, inputs->pad_idx);
++        if (err >= 0) err = avfilter_link(outputs->filter_ctx, outputs->pad_idx, this->videoFilterSinkCtx, 0);
++    } else if (err >= 0) err = AVERROR(EINVAL);
++    avfilter_inout_free(&inputs);
++    avfilter_inout_free(&outputs);
++    avfilter_graph_segment_free(&segment);
+     if (err < 0) {
+-        std::cerr << "Failed to parse graph filter: " << averr(err) << std::endl;;
+-        exit(-1) ;
+-    }
+-
+-    // Filters that create HW frames ('hwupload', 'hwmap', ...) need
+-    // AVBufferRef in their hw_device_ctx. Unfortunately, there is no
+-    // simple API to do that for filters created by avfilter_graph_parse_ptr().
+-    // The code below is inspired from ffmpeg_filter.c
+-    if (this->hw_device_context) {
+-        for (unsigned i=0; i< this->videoFilterGraph->nb_filters; i++) {
+-            this->videoFilterGraph->filters[i]->hw_device_ctx =
+-                av_buffer_ref(this->hw_device_context);
+-        }
++        std::cerr << "Failed to initialize video filter: " << averr(err) << std::endl;
++        exit(-1);
+     }
+ 
+     err = avfilter_graph_config(this->videoFilterGraph, NULL);
+@@ -686,6 +677,15 @@ void FrameWriter::init_codecs()
+         std::exit(-1);
+     }
+     AVDictionary *dummy = NULL;
++    const char *katman_segments = getenv("KATMAN_SEGMENT_LIST");
++    if (katman_segments && params.muxer == "segment") {
++        av_dict_set(&dummy, "segment_time", "2", 0);
++        av_dict_set(&dummy, "segment_format", "matroska", 0);
++        av_dict_set(&dummy, "segment_list", katman_segments, 0);
++        av_dict_set(&dummy, "reset_timestamps", "1", 0);
++        av_dict_set(&dummy, "segment_format_options", "cluster_time_limit=250:flush_packets=1", 0);
++    }
++
+     char err[256];
+     int ret;
+     if ((ret = avformat_write_header(fmtCtx, &dummy)) != 0)
+diff --git a/src/main.cpp b/src/main.cpp
+index 8ff65f9..9f2d15e 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -330,6 +330,20 @@ static void frame_handle_ready(void *, struct zwlr_screencopy_frame_v1 *,
+     buffer_copy_done = true;
+     buffer.presented.tv_sec = ((1ll * tv_sec_hi) << 32ll) | tv_sec_low;
+     buffer.presented.tv_nsec = tv_nsec;
++    static bool katman_timestamp_written = false;
++    if (!katman_timestamp_written) {
++        const char *timestamp_path = getenv("KATMAN_FIRST_FRAME_TS");
++        if (timestamp_path) {
++            FILE *timestamp_file = fopen(timestamp_path, "w");
++            if (timestamp_file) {
++                fprintf(timestamp_file, "monotonic_microsec\trealtime_microsec\n%lld\t0\n",
++                    (long long)buffer.presented.tv_sec * 1000000LL + tv_nsec / 1000);
++                fclose(timestamp_file);
++            }
++        }
++        katman_timestamp_written = true;
++    }
++
+     frame_failed_cnt = 0;
+ }
+ 

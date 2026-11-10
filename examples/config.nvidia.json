@@ -1,0 +1,18 @@
+{
+  "library": "~/Videos/Layer",
+  "fps": 60,
+  "bitrate": 18000,
+  "buffer": 300,
+  "auto_replay": false,
+  "gpu_vendor": "nvidia",
+  "capture_backend": "auto",
+  "capture_codec": "h264",
+  "render_device": "auto",
+  "wf_no_dmabuf": false,
+  "export_codec": "h264_nvenc",
+  "export_quality": 20,
+  "gsr_binary": "gpu-screen-recorder",
+  "wf_recorder_binary": "",
+  "speech_binary": "",
+  "speech_model": ""
+}

@@ -1,0 +1,121 @@
+diff --git a/src/Overlay.cpp b/src/Overlay.cpp
+index 921bdd3..6a0715a 100644
+--- a/src/Overlay.cpp
++++ b/src/Overlay.cpp
+@@ -67,6 +67,13 @@ extern "C" {
+ }
+ 
+ namespace gsr {
++
++    // Share GSR's configured hotkeys and menu actions with Layer. The controller
++    // receives explicit states, so opening the overlay cannot toggle capture.
++    static void mirror_layer_action(const char *action) {
++        const char *args[] = { "layer", "bridge", action, nullptr };
++        exec_program_daemonized(args, false);
++    }
+     static const mgl::Color bg_color(0, 0, 0, 100);
+     static const double force_window_on_top_timeout_seconds = 1.0;
+     static const double replay_status_update_check_timeout_seconds = 1.5;
+@@ -1571,6 +1578,22 @@ namespace gsr {
+             main_buttons_list->add_widget(std::move(button));
+         }
+ 
++        {
++            auto button = std::make_unique<DropdownButton>(get_theme().title_font_desc.c_str(), get_theme().body_font_desc.c_str(), "Layer", "Recording workspace", &get_theme().record_button_texture,
++                mgl::vec2f(button_width, button_height));
++            button->add_item("Open library", "ui");
++            button->add_item("Start / stop recording", "record");
++            button->add_item("Replay on / off", "replay");
++            button->add_item("Save last 1 minute", "save-1");
++            button->add_item("Save last 5 minutes", "save-5");
++            button->on_click = [this](const std::string &id) {
++                const char *katman_args[] = {"layer", id.c_str(), nullptr};
++                hide();
++                exec_program_on_host_daemonized(katman_args);
++            };
++            main_buttons_list->add_widget(std::move(button));
++        }
++
+         const mgl::vec2f main_buttons_list_size = main_buttons_list->get_size();
+         main_buttons_list->set_position((mgl::vec2f(window_size.x * 0.5f, window_size.y * 0.25f) - main_buttons_list_size * 0.5f).floor());
+         front_page_ptr->add_widget(std::move(main_buttons_list));
+@@ -2390,7 +2413,9 @@ namespace gsr {
+     // This is checked by gsr-game-tracker on the host, since the process ids are host process ids
+     static bool is_game_process_tree_pid(pid_t pid) {
+         const std::string pid_str = std::to_string(pid);
+-        const char *args[] = { "gsr-game-tracker", "--check-pid", pid_str.c_str(), NULL };
++        // Optional naming metadata must never indefinitely block replay completion or hotkeys.
++        // Kill the complete helper process group if game detection stalls.
++        const char *args[] = { "/usr/bin/timeout", "--signal=KILL", "0.5s", "gsr-game-tracker", "--check-pid", pid_str.c_str(), NULL };
+         std::string output;
+         return exec_program_on_host_get_stdout(args, output) == 0;
+     }
+@@ -2503,9 +2528,17 @@ namespace gsr {
+             return false;
+ 
+         const FocusedWindow focused_window = desktop_environment->get_focused_window();
+-        const std::string focused_game_name = get_focused_game_name(focused_window);
+-        const std::string folder_name = get_captured_application_name(organize_into_folders, focused_game_name, focused_window.title);
+-        const std::string file_game_name = get_captured_application_name(name_after_captured_application, focused_game_name, focused_window.title);
++        const std::string pid_str = std::to_string(focused_window.pid);
++        const char *identity_args[] = { "/usr/bin/timeout", "--signal=KILL", "2s", "layer", "app-name", pid_str.c_str(), nullptr };
++        std::string application_name;
++        if(exec_program_get_stdout(identity_args, application_name, false) != 0)
++            application_name = "Desktop";
++        while(!application_name.empty() && (application_name.back() == '\n' || application_name.back() == '\r' || application_name.back() == '\t' || application_name.back() == ' '))
++            application_name.pop_back();
++        application_name = strip(application_name);
++        if(application_name.empty()) application_name = "Desktop";
++        const std::string folder_name = get_captured_application_name(organize_into_folders, application_name, application_name);
++        const std::string file_game_name = get_captured_application_name(name_after_captured_application, application_name, application_name);
+ 
+         rename_file_to_game_name(filepath, file_game_name);
+ 
+@@ -2887,6 +2920,7 @@ namespace gsr {
+     }
+ 
+     void Overlay::update_ui_recording_started() {
++        mirror_layer_action("record-on");
+         if(!visible)
+             return;
+ 
+@@ -2898,6 +2932,7 @@ namespace gsr {
+     }
+ 
+     void Overlay::update_ui_recording_stopped() {
++        mirror_layer_action("record-off");
+         if(!visible)
+             return;
+ 
+@@ -2935,6 +2970,7 @@ namespace gsr {
+     }
+ 
+     void Overlay::update_ui_replay_started() {
++        mirror_layer_action("replay-on");
+         if(!visible)
+             return;
+ 
+@@ -2948,6 +2984,7 @@ namespace gsr {
+     }
+ 
+     void Overlay::update_ui_replay_stopped() {
++        mirror_layer_action("replay-off");
+         if(!visible)
+             return;
+ 
+@@ -3169,6 +3206,7 @@ namespace gsr {
+         if(replay_restart_on_save)
+             replay_duration_clock.restart();
+ 
++        mirror_layer_action(current_recording_config.replay_config.replay_time <= 60 ? "save-1" : "save-5");
+         kill(gpu_screen_recorder_process, SIGUSR1);
+     }
+ 
+@@ -3183,6 +3221,7 @@ namespace gsr {
+         replay_save_show_notification = true;
+         replay_save_clock.restart();
+         replay_saved_duration_sec = replay_duration_clock.get_elapsed_time_seconds();
++        mirror_layer_action("save-1");
+         kill(gpu_screen_recorder_process, SIGRTMIN+3);
+     }
+ 
