@@ -32,7 +32,7 @@ If migrating from a source installation, save/stop active captures, disable its 
 Install packages using your normal package manager. A typical runtime/editor set is:
 
 ```sh
-sudo pacman -S --needed python python-pip pyside6 python-numpy python-opencv \
+sudo pacman -S --needed python python-pip pyside6 qt6-multimedia qt6-svg qt6-wayland python-numpy python-opencv \
   ffmpeg pipewire libpulse fontconfig noto-fonts libnotify
 ```
 

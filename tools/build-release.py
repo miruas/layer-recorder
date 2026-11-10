@@ -47,7 +47,7 @@ def main():
     write('usr/share/mime/packages/katman.xml','<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info"><mime-type type="application/x-katman-project"><comment>Layer recording project</comment><glob pattern="*.katman"/></mime-type></mime-info>\n')
     write('usr/lib/systemd/user/katman.service','[Unit]\nDescription=Layer recording service\nAfter=graphical-session.target\nPartOf=graphical-session.target\nRequisite=graphical-session.target\n\n[Service]\nEnvironment=PYTHONPATH=/usr/lib/layer-recorder\nExecStart=/usr/bin/python3 -m katman.daemon\nWorkingDirectory=/usr/lib/layer-recorder\nRestart=on-failure\nRestartSec=3\nTimeoutStopSec=120\n\n[Install]\nWantedBy=graphical-session.target\n')
     # Never install host preferences or start captures as a package side effect.
-    dependencies=['python>=3.12','pyside6','python-numpy','python-opencv','ffmpeg','gpu-screen-recorder','pipewire','libpulse','fontconfig','noto-fonts','libnotify','libglvnd','libva','libdrm','libx11','libxrandr','libxfixes','libxdamage','libxcomposite','libxi','libxcursor','dbus','pango','libdecor']
+    dependencies=['python>=3.12','pyside6','qt6-multimedia','qt6-svg','qt6-wayland','python-numpy','python-opencv','ffmpeg','gpu-screen-recorder','pipewire','libpulse','fontconfig','noto-fonts','libnotify','libglvnd','libva','libdrm','libx11','libxrandr','libxfixes','libxdamage','libxcomposite','libxi','libxcursor','dbus','pango','libdecor']
     sonames=set()
     for file in app.rglob('*'):
         if not file.is_file() or file.read_bytes()[:4]!=b'\x7fELF':continue

@@ -97,6 +97,11 @@ class ThemeManager(QObject):
             QPushButton:focus, QToolButton:focus {{ border-color: {t['primary']}; }}
             QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox {{ background: {t['field']}; border: 1px solid {t['outline']}; border-radius: 5px;
                 padding: 7px 9px; min-height: 20px; selection-background-color: {t['primary']}; selection-color: {t['on_primary']}; }}
+            QSpinBox::up-button, QDoubleSpinBox::up-button {{ subcontrol-origin: border; subcontrol-position: top right; width: 25px; background: {t['raised']}; border-left: 1px solid {t['outline']}; border-top-right-radius: 4px; }}
+            QSpinBox::down-button, QDoubleSpinBox::down-button {{ subcontrol-origin: border; subcontrol-position: bottom right; width: 25px; background: {t['raised']}; border-left: 1px solid {t['outline']}; border-bottom-right-radius: 4px; }}
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover, QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {{ background: {t['selection']}; }}
+            QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ image: url(UP_PATH); width: 12px; height: 8px; }}
+            QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ image: url(DOWN_PATH); width: 12px; height: 8px; }}
             QLineEdit {{ placeholder-text-color: {t['muted']}; }}
             QLineEdit#projectTitle {{ background: transparent; border: 1px solid transparent; padding: 4px 0; font-size: 16px; font-weight: 600; }}
             QLineEdit#projectTitle:hover {{ border-bottom-color: {t['outline']}; }}
@@ -138,6 +143,10 @@ class ThemeManager(QObject):
         check = CACHE / "check.svg"
         check.write_text(svg)
         app.setStyleSheet(app.styleSheet().replace("CHECK_PATH", str(check)))
+        for name,points in [('up','2 6 6 2 10 6'),('down','2 2 6 6 10 2')]:
+            arrow=CACHE/(name+'.svg')
+            arrow.write_text(f'<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8" viewBox="0 0 12 8"><polyline points="{points}" fill="none" stroke="{t["text"]}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>')
+            app.setStyleSheet(app.styleSheet().replace(name.upper()+'_PATH',str(arrow)))
         self.changed.emit(t)
 
     def source_color(self, index):
