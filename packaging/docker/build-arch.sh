@@ -3,7 +3,7 @@
 set -euo pipefail
 mkdir -p /build /out
 if [ ! -d /build/src/.git ]; then
-    git -c safe.directory=/source clone --no-hardlinks /source /build/src
+    git -c safe.directory=/source -c safe.directory=/source/.git clone --no-hardlinks /source /build/src
 fi
 chown -R builder:builder /build /out
 runuser -u builder -- bash -c '
