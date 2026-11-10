@@ -11,7 +11,7 @@ Layer is a GPL-3.0-only source fork/distribution of **GPU Screen Recorder**, ori
 - Import method: unsquashed Git subtree; upstream's full reachable commit history is preserved as an ancestor of Layer's main branch.
 - Original license: `GPL-3.0-only`, preserved in the recorder subtree and the root license metadata.
 
-The `upstream-gsr` branch points at the unchanged official base. View its history with `git log upstream-gsr`; use `git merge-base --is-ancestor <upstream-commit> main` to check ancestry. The local `upstream` remote refers to the official host. No private machine-local working history was imported.
+The `upstream-gsr` branch points at the unchanged official base. View its history in a fresh clone with `git log origin/upstream-gsr`; use `git merge-base --is-ancestor <upstream-commit> main` to check ancestry. Configure the official remote in a fresh clone with `git remote add upstream https://repo.dec05eba.com/gpu-screen-recorder`. No private machine-local working history was imported.
 
 The official project is hosted outside GitHub. This repository therefore has source-fork ancestry and attribution, but is not attached to a GitHub fork network and does not display a GitHub “forked from” badge. A third-party GitHub mirror is not substituted for the official upstream.
 
