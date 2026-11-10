@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Synchronized independent-media playback; the UI only paints decoded frames."""
 from PySide6.QtCore import QObject, QElapsedTimer, QTimer, QUrl, Signal
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink

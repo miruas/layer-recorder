@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Vendor-neutral command planning; hardware support is checked, never assumed."""
 import functools
 import json
@@ -30,12 +31,20 @@ def render_device(config,inventory=None):
     return candidates[0]['device']
 
 
+def gsr_program(config):
+    if config['gsr_binary']!='auto':return config['gsr_binary']
+    return str(Path(__file__).resolve().parent.parent/'bin/gpu-screen-recorder')
+
+
 def gsr_info(program='gpu-screen-recorder'):
     p=subprocess.run([program,'--info'],capture_output=True,text=True,timeout=15)
     if p.returncode:raise RuntimeError('GPU Screen Recorder could not inspect capture capabilities: '+p.stderr[-1000:])
     section='';result={'vendor':'unknown','codecs':[]}
     for line in p.stdout.splitlines():
         if line.startswith('section='):section=line.split('=',1)[1]
+        elif section=='system_info' and '|' in line:
+            key,value=line.split('|',1)
+            if key in ('gsr_version','fork_name','fork_version','upstream_revision'):result[key]=value
         elif section=='gpu_info' and line.startswith('vendor|'):result['vendor']=line.split('|',1)[1]
         elif section=='video_codecs':result['codecs'].append(line.strip())
     return result
@@ -48,7 +57,7 @@ def capture_command(display,config,direct,info,helper,inventory=None):
     if backend=='gsr' and not use_gsr:raise RuntimeError('GSR cannot capture this output with the requested GPU profile. Use auto or the Wayland backend.')
     if use_gsr:
         if codec not in info.get('codecs',[]):raise RuntimeError('The capture GPU does not advertise '+codec+' encoding. Choose a supported capture_codec.')
-        return [config['gsr_binary'],'-w',display['name'],'-f',str(config['fps']),'-encoder','gpu','-fallback-cpu-encoding','no','-k',codec,'-bm','cbr','-q',str(config['bitrate']),'-keyint','1','-c','segment','-ffmpeg-opts','segment_time=2;segment_format=matroska;segment_list={list};reset_timestamps=1;segment_format_options=cluster_time_limit=250:flush_packets=1','-write-first-frame-ts','yes','-o','{output}','-v','no'], 'GPU Screen Recorder'
+        return [gsr_program(config),'-w',display['name'],'-f',str(config['fps']),'-encoder','gpu','-fallback-cpu-encoding','no','-k',codec,'-bm','cbr','-q',str(config['bitrate']),'-keyint','1','-c','segment','-ffmpeg-opts','segment_time=2;segment_format=matroska;segment_list={list};reset_timestamps=1;segment_format_options=cluster_time_limit=250:flush_packets=1','-write-first-frame-ts','yes','-o','{output}','-v','no'], 'GPU Screen Recorder'
     inventory=devices() if inventory is None else inventory
     selected=vendor if vendor!='auto' else info.get('vendor')
     if selected not in ('nvidia','amd','intel'):
@@ -80,7 +89,7 @@ def export_choices():
 
 
 def doctor(config):
-    tools={name:bool(shutil.which(name)) for name in ('ffmpeg','ffprobe','pw-record','pw-link','pw-dump','hyprctl',config['gsr_binary'])}
-    try:info=gsr_info(config['gsr_binary'])
+    tools={name:bool(shutil.which(name)) for name in ('ffmpeg','ffprobe','pw-record','pw-link','pw-dump','hyprctl',gsr_program(config))}
+    try:info=gsr_info(gsr_program(config))
     except (OSError,RuntimeError,subprocess.SubprocessError) as e:info={'error':str(e)}
     return {'gpu_devices':devices(),'capture_capabilities':info,'tools':tools,'ffmpeg_video_encoders':sorted(ffmpeg_encoders()),'replay_storage':'RAM (tmpfs)','note':'Compiled encoders do not guarantee hardware codec support. Test the selected codec on the target GPU.'}

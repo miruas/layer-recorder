@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Native presentation primitives and read-only media derivatives."""
 import array
 import hashlib

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Independent clip/track editing, animation and lossless media assembly."""
 import copy
 import math

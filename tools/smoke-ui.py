@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
 """Exercise native settings against an isolated temporary configuration."""
 import argparse,json,os,sys,tempfile
 from pathlib import Path

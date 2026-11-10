@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Bounded RAM replay with independent, automatically discovered sources.
 
 No audio routing is moved: PipeWire output ports are passively linked to our
@@ -15,7 +16,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from .hardware import capture_command, gsr_info
+from .hardware import capture_command, gsr_info, gsr_program
 from .buffer_storage import create_ram_buffer, MIN_FREE
 from .audio_identity import active_in_window, update_activity, update_presence, has_audio_content
 from .common import APP, CACHE, atomic_json, audio_sources, graph, monitors, probe, run, settings
@@ -180,8 +181,10 @@ class Recorder:
         display_list = monitors()
         if not display_list:
             raise RuntimeError("No displays are available to record.")
-        direct = {line.split("|")[0] for line in run([cfg["gsr_binary"], "--list-monitors"]).splitlines()}
-        info = gsr_info(cfg["gsr_binary"])
+        program=gsr_program(cfg)
+        if not shutil.which(program):raise RuntimeError('Build the Layer GSR fork with tools/build-native.py gpu-screen-recorder, or configure gsr_binary explicitly.')
+        direct = {line.split("|")[0] for line in run([program, "--list-monitors"]).splitlines()}
+        info = gsr_info(program)
         self.root = create_ram_buffer()
         self.archive_root = CACHE / ("recording-" + self.root.name)
         try:

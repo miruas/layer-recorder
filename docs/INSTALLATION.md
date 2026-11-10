@@ -15,7 +15,7 @@ sudo pacman -S --needed python python-pip python-pyside6 python-numpy python-ope
   ffmpeg pipewire libpulse fontconfig noto-fonts libnotify
 ```
 
-Install GPU Screen Recorder from the distribution's supported package or its upstream instructions. Confirm `gpu-screen-recorder --info` succeeds before troubleshooting Layer.
+The recorder source is included as a real source fork. Build it with the command below. A compatible distribution-installed `gsr-kms-server` is required for direct KMS capture, or use the matching broker built from the fork through your normal system packaging workflow. See [UPSTREAM.md](../UPSTREAM.md).
 
 Native helper build dependencies include:
 
@@ -23,7 +23,7 @@ Native helper build dependencies include:
 sudo pacman -S --needed base-devel git meson ninja cmake pkgconf \
   wayland wayland-protocols libdrm libglvnd libpulse libx11 libxcomposite \
   libxfixes libxext libxi libxcursor libxrandr libxrender libxkbcommon \
-  dbus pango freetype2 libdecor
+  dbus pango freetype2 libdecor vulkan-headers libva libcap libxdamage
 ```
 
 The relevant development libraries come with Arch packages. On other distributions, install their development-header equivalents. See [GPU_SUPPORT.md](GPU_SUPPORT.md) for vendor drivers.
@@ -36,6 +36,7 @@ cd layer-recorder
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e . meson ninja
+python tools/build-native.py gpu-screen-recorder
 python tools/build-native.py wf-recorder
 python install.py --profile auto --enable
 ```

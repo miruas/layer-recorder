@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1 — 2026-11-10
+
+- Convert the standalone distribution into a GPU Screen Recorder source fork based on official tag6.1.7, preserving its full public Git ancestry and copyright notices.
+- Include/build the native recorder core locally and expose explicit Layer fork provenance through its capability output.
+- Use GPL-3.0-only for the fork distribution and first-party source metadata, retaining independent third-party notices.
+- Make the locally built fork the default recorder; a system recorder remains an explicit configuration option.
+- Sanitize upstream example paths and verify the original public documentation asset by hash.
+
 ## 0.5.0 — 2026-11-10
 
 - Publish a portable, source-only Layer distribution with no personal configuration/media/binaries.

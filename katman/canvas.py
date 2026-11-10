@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Native compositing canvas shared by the viewer and crop editor."""
 import math
 from PySide6.QtCore import Qt, Signal, QRectF, QPointF

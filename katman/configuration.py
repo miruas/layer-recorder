@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Validated, portable configuration. No machine-specific defaults."""
 import copy
 import json
@@ -9,7 +10,7 @@ DEFAULTS = {
     'auto_replay': False, 'gpu_vendor': 'auto', 'capture_backend': 'auto',
     'capture_codec': 'h264', 'render_device': 'auto', 'wf_no_dmabuf': False,
     'export_codec': 'libx264', 'export_quality': 20,
-    'gsr_binary': 'gpu-screen-recorder', 'wf_recorder_binary': '',
+    'gsr_binary': 'auto', 'wf_recorder_binary': '',
     'speech_binary': '', 'speech_model': '',
 }
 CODECS = ('libx264','libx265','libaom-av1','h264_nvenc','hevc_nvenc','av1_nvenc','h264_vaapi','hevc_vaapi','av1_vaapi')

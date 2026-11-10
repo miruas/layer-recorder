@@ -1,4 +1,4 @@
-include LICENSE NOTICE.md README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md install.py run.sh
+include LICENSE UPSTREAM.md NOTICE.md README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md install.py run.sh
 recursive-include katman *.py *.svg
 recursive-include tests *.py
 recursive-include docs *.md
@@ -13,3 +13,5 @@ prune overlay
 prune bin
 prune speech
 global-exclude *.pyc *.pyo __pycache__ *.log .env settings.json
+
+recursive-include upstream *.c *.h *.sh *.build *.wrap *.1 *.conf *.xml *.patch *.md *.txt *.env *.service *.png LICENSE TODO

@@ -18,7 +18,7 @@ The default file is `${XDG_CONFIG_HOME:-~/.config}/katman/settings.json`. `LAYER
 | `wf_no_dmabuf` | `false` | Force the helper's frame-copy path; useful for cross-GPU import problems. Encoding remains hardware accelerated. |
 | `export_codec` | `libx264` | Initial encoder selection in the native export dialog. See supported values below. |
 | `export_quality` | `20` | Initial quality value, 0–51; lower means higher quality. Encoder scales differ. |
-| `gsr_binary` | `gpu-screen-recorder` | Executable name/path for GSR. |
+| `gsr_binary` | `auto` | Use the local Layer GSR fork. An explicit executable name/path opts into a system/custom recorder. |
 | `wf_recorder_binary` | empty | Optional explicit path/name of the patched helper; empty uses the local build. |
 | `speech_binary` | empty | Optional whisper.cpp CLI path; empty uses the local speech build. |
 | `speech_model` | empty | Optional local ggml model path; empty uses `speech/ggml-base.bin`. |

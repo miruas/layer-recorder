@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Cancellable native media analysis, proxies, tracking and offline captions."""
 import copy
 import hashlib

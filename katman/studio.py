@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Full native, independent-track editing workspace for existing Layer projects."""
 import copy
 import json

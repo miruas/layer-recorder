@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """One FFmpeg compositor for timeline previews, audio mixes and final exports."""
 import copy
 import functools

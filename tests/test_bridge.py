@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 import threading
 import unittest
 from unittest.mock import patch

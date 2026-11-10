@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Non-destructive clip geometry, annotations, and recording assembly."""
 import copy
 import math

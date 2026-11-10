@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Opt-in real AMD/Intel media checks; driver support is not emulated."""
 import os,unittest
 import test_studio

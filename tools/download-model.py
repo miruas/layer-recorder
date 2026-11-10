@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
 """Download the optional public Whisper base model with SHA-256 verification."""
 import argparse,hashlib,os,tempfile,urllib.request
 from pathlib import Path

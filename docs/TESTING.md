@@ -33,3 +33,8 @@ CI runs CPU/media/configuration/UI/package checks on Python3.12–3.14. It has n
 `python -m build` produces source and wheel distributions. Inspect the source archive before sharing a release. `tools/check-public-tree.py` audits tracked source paths/text, rejects binary files, machine home/media paths and common credential patterns. This is a release guard, not a guarantee that an arbitrary repository is free of sensitive content; review staged files too.
 
 Optional native sources are pinned in `packaging/native-lock.json`. Patches are published, compiled outputs ignored. Rebuild after changing a patch, and repeat a real short capture on the affected backend before claiming support.
+
+
+## Source-fork validation (0.5.1)
+
+All65 local tests passed with hardware exports enabled after importing the official GSR6.1.7 history. Additional checks verify GPL-3.0-only metadata, the preserved upstream ancestor, default local-fork selection and capability provenance. The in-tree native recorder was compiled and produced a7.88sec live recording without capture warnings. The native `--info` output identifies Layer0.5.1, GSR6.1.7 and the exact upstream base commit. Source and wheel packages were built; source distributions include the recorder's native source and license. The GitHub checkout fetches full history so CI can verify ancestry.

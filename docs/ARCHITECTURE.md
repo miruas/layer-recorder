@@ -1,5 +1,7 @@
 # Architecture and storage
 
+The native recorder foundation and original GPLv3 history are included at `upstream/gpu-screen-recorder/`. See [UPSTREAM.md](../UPSTREAM.md) for the exact base and modifications.
+
 ## Data flow
 
 ```text

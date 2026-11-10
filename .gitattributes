@@ -2,3 +2,5 @@
 *.py text
 *.patch text
 *.svg text
+
+upstream/gpu-screen-recorder/study/*.png binary

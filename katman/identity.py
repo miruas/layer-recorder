@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Application identity for recording folders. Window titles are never used."""
 import json
 import re

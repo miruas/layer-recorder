@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Private Linux RAM replay storage, separate from durable recordings/cache."""
 import os
 import re

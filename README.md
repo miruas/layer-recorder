@@ -1,6 +1,8 @@
-# Layer
+# Layer — GPU Screen Recorder fork
 
-A native Linux recorder and independent-track video editor. Capture displays and application audio separately, keep the last minute or five minutes in RAM, then decide which screens and sounds belong in the final video.
+A **GPL-3.0-only source fork of GPU Screen Recorder**, with a native independent-track editor. The original recorder is developed by dec05eba; its source, copyright notices and Git history are preserved here. See [upstream provenance and fork changes](UPSTREAM.md).
+
+Layer is a native Linux recorder and independent-track video editor. Capture displays and application audio separately, keep the last minute or five minutes in RAM, then decide which screens and sounds belong in the final video.
 
 Layer supports NVIDIA NVENC and AMD/Intel VA-API paths. It is a PySide6 desktop application, not a browser interface. Capture currently targets **Hyprland on Wayland**; the editor can open existing projects without Hyprland.
 
@@ -41,6 +43,7 @@ cd layer-recorder
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e . meson ninja
+python tools/build-native.py gpu-screen-recorder
 python tools/build-native.py wf-recorder
 python install.py --profile auto --enable
 ```
@@ -55,7 +58,7 @@ layer save-1
 layer save-5
 ```
 
-Saving before the ring fills includes the footage available since capture started. Saved clips go to `~/Videos/Layer` by default. No personal settings, recordings, compiled binaries or speech models are distributed in this repository.
+Saving before the ring fills includes the footage available since capture started. Saved clips go to `~/Videos/Layer` by default. No personal settings, recordings, compiled binaries or speech models are distributed in this repository. The original public upstream color-space documentation figure is retained with a verified provenance hash.
 
 For AMD or Intel, choose `--profile amd` or `--profile intel` on a fresh install, or edit the existing configuration. Existing settings are never overwritten by reinstalling.
 

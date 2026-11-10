@@ -1,3 +1,4 @@
+/* Modified by Layer on 2026-11-10: expose fork identity in capability output. */
 #include "../../include/cli/commands.h"
 #include "../../include/recorder/windowing.h"
 #include "../../include/recorder/codec_select.h"
@@ -267,6 +268,10 @@ int info_command(void *userdata) {
     else
         puts("is_steam_deck|no");
     printf("gsr_version|%s\n", GSR_VERSION);
+    /* Layer fork provenance; retain the upstream version for CLI compatibility. */
+    puts("fork_name|Layer");
+    puts("fork_version|0.5.1");
+    puts("upstream_revision|1d4946a16139b446e6308f741e9ba99f2ed5b3a7");
     puts("section=gpu_info");
     list_gpu_info(&windowing.egl);
     list_supported_video_codecs(&windowing.egl);

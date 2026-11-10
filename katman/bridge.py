@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Mirror successful GPU Screen Recorder actions without blocking its event loop."""
 import json
 from .common import request

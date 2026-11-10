@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 import unittest
 from types import SimpleNamespace
 from katman.common import audio_sources

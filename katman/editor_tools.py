@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Native clip, canvas, and assembly tools for the Layer window."""
 import copy
 from pathlib import Path

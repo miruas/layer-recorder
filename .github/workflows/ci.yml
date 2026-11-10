@@ -18,6 +18,8 @@ jobs:
       XDG_RUNTIME_DIR: /tmp/layer-ci-runtime
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}

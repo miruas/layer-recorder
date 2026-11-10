@@ -90,7 +90,7 @@
     },
     "gsr_binary": {
       "type": "string",
-      "default": "gpu-screen-recorder"
+      "default": "auto"
     },
     "wf_recorder_binary": {
       "type": "string",

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Native editors for animation, titles, subtitles, render settings and analysis."""
 import copy
 import json

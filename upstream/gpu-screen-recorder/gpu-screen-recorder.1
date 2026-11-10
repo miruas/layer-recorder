@@ -1,3 +1,4 @@
+.\" Modified by Layer on 2026-11-10: use a generic example recording path.
 .TH GPU-SCREEN-RECORDER 1 "2026-10-22" "6.1.5" "GPU Screen Recorder Manual"
 .SH NAME
 gpu-screen-recorder \- The fastest screen recording tool for Linux
@@ -659,7 +660,7 @@ echo '{"id":1,"name":"save-replay","data":{"seconds":30}}' | socat - "UNIX-CONNE
 which replies with the following when the replay has been saved:
 .nf
 .RS
-{"id":1,"result":"ok","data":"/home/user/Videos/Replay_2026-08-05_14-04-22.mp4"}
+{"id":1,"result":"ok","data":"~/Videos/Replay_2026-08-05_14-04-22.mp4"}
 .RE
 .fi
 .SH EXAMPLES

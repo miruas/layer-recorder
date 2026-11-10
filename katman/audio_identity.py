@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Stable, readable PipeWire stream identities and recording-window activity."""
 from .identity import application_label
 

@@ -11,7 +11,7 @@
   "wf_no_dmabuf": false,
   "export_codec": "libx264",
   "export_quality": 20,
-  "gsr_binary": "gpu-screen-recorder",
+  "gsr_binary": "auto",
   "wf_recorder_binary": "",
   "speech_binary": "",
   "speech_model": ""

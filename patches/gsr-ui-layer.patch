@@ -1,12 +1,13 @@
 diff --git a/src/Overlay.cpp b/src/Overlay.cpp
-index 921bdd3..6a0715a 100644
+index 921bdd3..c92191e 100644
 --- a/src/Overlay.cpp
 +++ b/src/Overlay.cpp
-@@ -67,6 +67,13 @@ extern "C" {
+@@ -67,6 +67,14 @@ extern "C" {
  }
  
  namespace gsr {
 +
++    // Modified by Layer on 2026-11-10: add workspace actions, state mirroring and bounded private-title-free naming.
 +    // Share GSR's configured hotkeys and menu actions with Layer. The controller
 +    // receives explicit states, so opening the overlay cannot toggle capture.
 +    static void mirror_layer_action(const char *action) {
@@ -16,7 +17,7 @@ index 921bdd3..6a0715a 100644
      static const mgl::Color bg_color(0, 0, 0, 100);
      static const double force_window_on_top_timeout_seconds = 1.0;
      static const double replay_status_update_check_timeout_seconds = 1.5;
-@@ -1571,6 +1578,22 @@ namespace gsr {
+@@ -1571,6 +1579,22 @@ namespace gsr {
              main_buttons_list->add_widget(std::move(button));
          }
  
@@ -39,7 +40,7 @@ index 921bdd3..6a0715a 100644
          const mgl::vec2f main_buttons_list_size = main_buttons_list->get_size();
          main_buttons_list->set_position((mgl::vec2f(window_size.x * 0.5f, window_size.y * 0.25f) - main_buttons_list_size * 0.5f).floor());
          front_page_ptr->add_widget(std::move(main_buttons_list));
-@@ -2390,7 +2413,9 @@ namespace gsr {
+@@ -2390,7 +2414,9 @@ namespace gsr {
      // This is checked by gsr-game-tracker on the host, since the process ids are host process ids
      static bool is_game_process_tree_pid(pid_t pid) {
          const std::string pid_str = std::to_string(pid);
@@ -50,7 +51,7 @@ index 921bdd3..6a0715a 100644
          std::string output;
          return exec_program_on_host_get_stdout(args, output) == 0;
      }
-@@ -2503,9 +2528,17 @@ namespace gsr {
+@@ -2503,9 +2529,17 @@ namespace gsr {
              return false;
  
          const FocusedWindow focused_window = desktop_environment->get_focused_window();
@@ -71,7 +72,7 @@ index 921bdd3..6a0715a 100644
  
          rename_file_to_game_name(filepath, file_game_name);
  
-@@ -2887,6 +2920,7 @@ namespace gsr {
+@@ -2887,6 +2921,7 @@ namespace gsr {
      }
  
      void Overlay::update_ui_recording_started() {
@@ -79,7 +80,7 @@ index 921bdd3..6a0715a 100644
          if(!visible)
              return;
  
-@@ -2898,6 +2932,7 @@ namespace gsr {
+@@ -2898,6 +2933,7 @@ namespace gsr {
      }
  
      void Overlay::update_ui_recording_stopped() {
@@ -87,7 +88,7 @@ index 921bdd3..6a0715a 100644
          if(!visible)
              return;
  
-@@ -2935,6 +2970,7 @@ namespace gsr {
+@@ -2935,6 +2971,7 @@ namespace gsr {
      }
  
      void Overlay::update_ui_replay_started() {
@@ -95,7 +96,7 @@ index 921bdd3..6a0715a 100644
          if(!visible)
              return;
  
-@@ -2948,6 +2984,7 @@ namespace gsr {
+@@ -2948,6 +2985,7 @@ namespace gsr {
      }
  
      void Overlay::update_ui_replay_stopped() {
@@ -103,7 +104,7 @@ index 921bdd3..6a0715a 100644
          if(!visible)
              return;
  
-@@ -3169,6 +3206,7 @@ namespace gsr {
+@@ -3169,6 +3207,7 @@ namespace gsr {
          if(replay_restart_on_save)
              replay_duration_clock.restart();
  
@@ -111,7 +112,7 @@ index 921bdd3..6a0715a 100644
          kill(gpu_screen_recorder_process, SIGUSR1);
      }
  
-@@ -3183,6 +3221,7 @@ namespace gsr {
+@@ -3183,6 +3222,7 @@ namespace gsr {
          replay_save_show_notification = true;
          replay_save_clock.restart();
          replay_saved_duration_sec = replay_duration_clock.get_elapsed_time_seconds();

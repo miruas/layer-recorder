@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """Native multi-track timeline and direct manipulation canvas."""
 import copy
 import math
