@@ -8,7 +8,7 @@ SHA256='60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe'
 
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',type=Path,default=Path(__file__).resolve().parent.parent/'speech/ggml-base.bin');args=parser.parse_args();dest=args.output.expanduser();dest.parent.mkdir(parents=True,exist_ok=True)
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',type=Path,default=Path(os.environ.get('XDG_CACHE_HOME',Path.home()/'.cache'))/'katman/speech/ggml-base.bin');args=parser.parse_args();dest=args.output.expanduser();dest.parent.mkdir(parents=True,exist_ok=True)
     if dest.exists():
         if hashlib.sha256(dest.read_bytes()).hexdigest()==SHA256:print('Verified existing model.');return
         raise SystemExit('The destination exists with different content. Choose a new output path.')

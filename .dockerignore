@@ -1,0 +1,5 @@
+**
+!packaging/
+!packaging/docker/
+!packaging/docker/arch-release.Dockerfile
+!packaging/docker/build-arch.sh

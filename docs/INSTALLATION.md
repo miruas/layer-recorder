@@ -6,12 +6,33 @@ Layer capture currently requires Linux, a Hyprland Wayland session, PipeWire and
 
 Use Python 3.12 or newer. Current capture/helper builds target FFmpeg 8.1 or newer. The editor's filter-file handling also supports older FFmpeg builds used in CI. Distribution packages must include the filters/encoders you use: libass, drawtext, vid.stab, libx264/libx265 and optional AV1/VA-API/NVENC.
 
+## Ready-to-install Arch / CachyOS package
+
+Download the `.pkg.tar.zst` and matching SHA256SUMS from [Releases](https://github.com/miruas/layer-recorder/releases). Version 0.6.0 targets **x86_64 Arch/CachyOS**, with one package for NVIDIA, AMD and Intel. It is not an AppImage or a package for every Linux distribution.
+
+Keep the system fully updated; partial upgrades are unsupported. Install GPU Screen Recorder through your distribution/AUR workflow first: Layer uses its compatible, system-managed KMS broker for privileged display capture. Install the appropriate vendor drivers from [GPU support](GPU_SUPPORT.md). Then:
+
+```sh
+sha256sum --check --ignore-missing layer-recorder-0.6.0-SHA256SUMS
+sudo pacman -U ./layer-recorder-0.6.0-1-x86_64.pkg.tar.zst
+layer doctor
+layer ui
+```
+
+The package contains the compiled Layer GSR engine, patched overlay, Wayland fallback and offline subtitle engine. Runtime dependencies are resolved by pacman; subtitle model weights are an optional separate download (`layer-download-model`). Neither installation nor an update replaces user preferences, records the desktop, or enables services automatically. FFmpeg SONAME dependencies prevent loading helpers against an incompatible ABI.
+
+For startup, run `systemctl --user enable --now katman.service` and enable replay startup in Settings, or use the GSR bridge. Set up the optional overlay as described in [Integration](INTEGRATION.md).
+
+If migrating from a source installation, save/stop active captures, disable its service and remove its owned installation links with that checkout's `python install.py --uninstall` before installing the package. Otherwise a user-local launcher/service can shadow the packaged version. Projects and local preferences remain intact. Removal: save/stop captures, disable the service, then `sudo pacman -R layer-recorder`.
+
+[Build from source and build your own installable package](BUILDING.md).
+
 ## Arch / CachyOS
 
 Install packages using your normal package manager. A typical runtime/editor set is:
 
 ```sh
-sudo pacman -S --needed python python-pip python-pyside6 python-numpy python-opencv \
+sudo pacman -S --needed python python-pip pyside6 python-numpy python-opencv \
   ffmpeg pipewire libpulse fontconfig noto-fonts libnotify
 ```
 

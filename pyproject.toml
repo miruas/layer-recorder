@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "layer-recorder"
-version = "0.5.1"
+version = "0.6.0"
 description = "Native Linux RAM replay recorder and independent-track editor for NVIDIA, AMD and Intel"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -20,4 +20,4 @@ layer = "katman.__main__:main"
 include = ["katman*"]
 
 [tool.setuptools.package-data]
-katman = ["assets/*.svg"]
+katman = ["assets/*.svg", "assets/*.json"]

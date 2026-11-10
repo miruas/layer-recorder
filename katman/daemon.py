@@ -20,6 +20,8 @@ def main():
     except BlockingIOError:
         return
     recorder = Recorder()
+    from .shortcuts import Watcher
+    shortcut_watcher=Watcher()
     SOCKET.unlink(missing_ok=True)
 
     class Handler(socketserver.StreamRequestHandler):
@@ -30,8 +32,11 @@ def main():
                 action = message["action"]
                 if action == "status":
                     result = recorder.status()
+                    result["shortcut_error"] = shortcut_watcher.error
                 elif action == "set-capture-state":
                     result = recorder.set_capture_state(message["kind"], message["enabled"])
+                elif action == "reload-settings":
+                    result=recorder.reload_settings()
                 elif action == "toggle-record":
                     result = recorder.toggle_record()
                 elif action == "toggle-replay":
@@ -70,6 +75,7 @@ def main():
     try:
         server.serve_forever(poll_interval=.25)
     finally:
+        shortcut_watcher.stop.set()
         recorder.shutdown()
         server.server_close()
         SOCKET.unlink(missing_ok=True)

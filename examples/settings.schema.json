@@ -23,8 +23,8 @@
     "buffer": {
       "type": "integer",
       "default": 300,
-      "minimum": 300,
-      "maximum": 300
+      "minimum": 30,
+      "maximum": 3600
     },
     "auto_replay": {
       "type": "boolean",
@@ -103,6 +103,61 @@
     "speech_model": {
       "type": "string",
       "default": ""
+    },
+    "replay_short": {
+      "type": "integer",
+      "default": 60,
+      "minimum": 1,
+      "maximum": 3600
+    },
+    "replay_long": {
+      "type": "integer",
+      "default": 300,
+      "minimum": 1,
+      "maximum": 3600
+    },
+    "shortcuts_enabled": {
+      "type": "boolean",
+      "default": true
+    },
+    "shortcuts": {
+      "type": "object",
+      "default": {
+        "ui": "Meta+Alt+Z",
+        "save-1": "Meta+Alt+F7",
+        "save-5": "Meta+Alt+F8",
+        "record": "Meta+Alt+F9",
+        "replay": "Meta+Alt+F10"
+      },
+      "additionalProperties": false,
+      "properties": {
+        "ui": {
+          "type": "string"
+        },
+        "save-1": {
+          "type": "string"
+        },
+        "save-5": {
+          "type": "string"
+        },
+        "record": {
+          "type": "string"
+        },
+        "replay": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ui",
+        "save-1",
+        "save-5",
+        "record",
+        "replay"
+      ]
+    },
+    "gsr_sync": {
+      "type": "boolean",
+      "default": false
     }
   }
 }

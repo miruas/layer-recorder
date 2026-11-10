@@ -1,0 +1,24 @@
+name: Build installable Arch release
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  arch-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Build compiled package and corresponding sources
+        run: python3 tools/release-container.py
+      - name: Upload release candidates
+        uses: actions/upload-artifact@v6
+        with:
+          name: layer-arch-x86_64
+          path: |
+            dist/*.pkg.tar.zst
+            dist/*-corresponding-sources.tar.gz
+            dist/*-SHA256SUMS
+          if-no-files-found: error

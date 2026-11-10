@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Mirror successful GPU Screen Recorder actions without blocking its event loop."""
 import json
-from .common import request
+from .common import request,settings
 
 
 def mirror(action):
@@ -15,5 +15,5 @@ def mirror(action):
         kind, enabled = states[action]
         result = request("set-capture-state", kind=kind, enabled=enabled)
     else:
-        result = request("save-replay", seconds=60 if action == "save-1" else 300)
+        result = request("save-replay", seconds=settings()["replay_short" if action=="save-1" else "replay_long"])
     print(json.dumps(result, ensure_ascii=False))

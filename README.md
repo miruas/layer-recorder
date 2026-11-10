@@ -21,7 +21,7 @@ See [GPU support and driver setup](docs/GPU_SUPPORT.md) for profiles, limitation
 ## Features
 
 - Independent display, microphone and application-audio capture, including sources that appear after recording starts.
-- Five-minute **RAM replay ring**, with separate last-60-second and last-300-second save actions. Normal recording and replay can run together.
+- Configurable **RAM replay ring**, with separate short/long save presets (60 and 300 seconds by default). Normal recording and replay can run together.
 - Time-window source filtering: retired or genuinely silent application streams are omitted from new saves; microphone tracks remain available.
 - Readable audio roles such as **Discord — Voice chat**, **Discord — Media** and **Notifications**, when exposed separately by PipeWire.
 - Recording library and native Studio with independent video/audio tracks, move/trim/split, snapping, zoom, multi-selection, copy/paste, undo/redo and source-preserving append/overlay imports.
@@ -33,7 +33,20 @@ See [GPU support and driver setup](docs/GPU_SUPPORT.md) for profiles, limitation
 - Configurable video, audio-only, batch and PNG exports. Original recording files are preserved.
 - Optional GSR Alt+Z integration with mirrored record/replay shortcuts. Normal save successes remain silent; errors stay visible.
 
-## Quick start
+## Download and install
+
+[**Download the ready-to-install release**](https://github.com/miruas/layer-recorder/releases/latest) for **Arch / CachyOS x86_64**. One package supports NVIDIA, AMD and Intel, subject to GPU/driver capabilities. It includes compiled capture helpers, the patched GSR overlay and offline subtitle engine. No compilation is required for the package; install the required vendor drivers and system GSR KMS broker first.
+
+```sh
+sudo pacman -U ./layer-recorder-0.6.0-1-x86_64.pkg.tar.zst
+layer ui
+```
+
+[Package installation and checksum verification](docs/INSTALLATION.md) · [Build from source](docs/BUILDING.md) · [Release history](https://github.com/miruas/layer-recorder/releases)
+
+Native **Settings** provides H.264 / H.265 / AV1 selection, export encoder, RAM replay duration, both save presets, editable Layer shortcuts and shared GSR shortcuts/preferences. Changes preserve unrelated GSR configuration.
+
+## Source quick start
 
 Use a current Arch-based system with Python 3.12+, PipeWire, Hyprland, FFmpeg and GPU Screen Recorder. Capture helpers target current FFmpeg APIs; see [installation](docs/INSTALLATION.md) for exact dependencies and other distributions.
 
@@ -58,7 +71,7 @@ layer save-1
 layer save-5
 ```
 
-Saving before the ring fills includes the footage available since capture started. Saved clips go to `~/Videos/Layer` by default. No personal settings, recordings, compiled binaries or speech models are distributed in this repository. The original public upstream color-space documentation figure is retained with a verified provenance hash.
+Saving before the ring fills includes the footage available since capture started. Saved clips go to `~/Videos/Layer` by default. No personal settings, recordings or speech models are distributed. Compiled installable packages are published as release assets; Git tracks source and documentation. The original public upstream color-space documentation figure is retained with a verified provenance hash.
 
 For AMD or Intel, choose `--profile amd` or `--profile intel` on a fresh install, or edit the existing configuration. Existing settings are never overwritten by reinstalling.
 

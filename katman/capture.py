@@ -154,6 +154,7 @@ class Recorder:
         self.tracks = []
         self.errors = []
         self.last_project = None
+        self.buffer_limit=300
         self.root = None
         self.archive_root = None
         self.stopping = False
@@ -165,7 +166,7 @@ class Recorder:
             return {"running": self.running, "replay": self.replay,
                     "buffer_storage": "ram", "buffer_directory": str(self.root) if self.root else None,
                     "recording": self.record_start is not None,
-                    "buffer_seconds": min(300, max(0, elapsed)),
+                    "buffer_seconds": min(self.buffer_limit, max(0, elapsed)),
                     "record_seconds": max(0, elapsed - self.record_start) if self.record_start is not None else 0,
                     "sources": [{"id": t.id, **t.meta, "active": t.alive()} for t in self.tracks],
                     "errors": self.errors[-10:], "last_project": self.last_project,
@@ -177,6 +178,7 @@ class Recorder:
         self.errors = []
         self.tracks = []
         cfg = settings()
+        self.buffer_limit=cfg["buffer"]
         self.origin = time.monotonic()
         display_list = monitors()
         if not display_list:
@@ -309,11 +311,11 @@ class Recorder:
                         else:self._stop(clean=False)
                         continue
                     elapsed = time.monotonic() - self.origin
-                    cutoff = elapsed - 306
+                    cutoff = elapsed - self.buffer_limit - 6
                     if self.record_start is not None:
                         cutoff = min(cutoff, self.record_start - 3)
                     for t in self.tracks:
-                        t.prune(cutoff, elapsed-306 if self.record_start is not None else None, self.archive_root)
+                        t.prune(cutoff, elapsed-self.buffer_limit-6 if self.record_start is not None else None, self.archive_root)
                         if not t.alive() and not t.error_reported:
                             t.error_reported = True
                             tail = (t.path / "capture.log").read_text(errors="replace")[-1200:]
@@ -366,9 +368,20 @@ class Recorder:
                 if self.archive_root:shutil.rmtree(self.archive_root,ignore_errors=True)
             return {**self.status(), "saved": project}
 
+    def reload_settings(self):
+        with self.lock:
+            if self.record_start is not None:raise RuntimeError('Settings saved. Stop the ordinary recording before applying capture changes.')
+            was_replay=self.replay;saved=None
+            if self.running:
+                end=time.monotonic()-self.origin
+                if was_replay and end>=.5:saved=self._snapshot(max(0,end-self.buffer_limit),end,'replay')
+                self._stop();self.replay=False
+            if was_replay:self._start();self.replay=True
+            return {**self.status(),'preserved_project':saved}
+
     def save_replay(self, seconds):
-        if seconds not in (60, 300):
-            raise ValueError("Replay duration must be 60 or 300 seconds.")
+        if type(seconds) is not int or not 1<=seconds<=self.buffer_limit:
+            raise ValueError("Replay duration must fit inside the configured RAM buffer.")
         with self.lock:
             if not self.running or not self.replay:
                 raise RuntimeError("Enable the replay buffer first.")

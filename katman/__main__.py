@@ -88,7 +88,8 @@ def main():
         ensure_daemon()
         mapping = {"record": "toggle-record", "replay": "toggle-replay", "save-1": "save-replay",
                    "save-5": "save-replay", "status": "status", "shutdown": "shutdown"}
-        extra = {"seconds": 60 if args.command == "save-1" else 300} if args.command.startswith("save-") else {}
+        from .common import settings
+        extra = {"seconds": settings()["replay_short" if args.command=="save-1" else "replay_long"]} if args.command.startswith("save-") else {}
         result = request(mapping[args.command], **extra)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if args.command not in ("status", "save-1", "save-5") and not (args.command == "record" and not result.get("recording")):

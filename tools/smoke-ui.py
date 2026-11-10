@@ -19,10 +19,10 @@ with tempfile.TemporaryDirectory(prefix='layer-ui-qa-') as directory:
     def edit():
         dialog=app.activeModalWidget();assert isinstance(dialog,QDialog)
         combos={c.accessibleName():c for c in dialog.findChildren(QComboBox)}
-        vendor=combos['GPU profile'];vendor.setCurrentIndex(vendor.findData('amd'));combos['Capture codec'].setCurrentText('hevc')
+        vendor=combos['GPU profile'];vendor.setCurrentIndex(vendor.findData('amd'));combos['Capture codec'].setCurrentIndex(combos['Capture codec'].findData('hevc'))
         if args.screenshots:
             args.screenshots.mkdir(parents=True,exist_ok=True);dialog.grab().save(str(args.screenshots/'settings.png'));w.grab().save(str(args.screenshots/'library.png'))
         dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.Save).click()
     def run():
-        QTimer.singleShot(100,edit);w.show_settings();values=settings();assert values['gpu_vendor']=='amd' and values['capture_codec']=='hevc';state['ok']=True;w.close();app.quit()
+        QTimer.singleShot(100,edit);w.show_settings();values=settings();assert values['gpu_vendor']=='amd' and values['capture_codec']=='hevc';state['ok']=True;w.close();w.deleteLater();QTimer.singleShot(50,app.quit)
     QTimer.singleShot(100,run);QTimer.singleShot(15000,lambda:app.exit(9));result=app.exec();assert result==0 and state['ok'];print('NATIVE_SETTINGS_GPU_PROFILE_SAVE_OK')

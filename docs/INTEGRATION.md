@@ -35,3 +35,21 @@ The patch also bounds optional application-name helper lookups and avoids naming
 The optional GSR service override has Wants/After for `katman.service`; GSR replay autostart mirrors replay-on. Standalone users can enable `katman.service` and `auto_replay` instead. Save actions work only after replay has started. Before the ring fills, only the available footage can be saved.
 
 To activate a newly built overlay, save/stop existing GSR capture before restarting its service. Neither build nor installation forcibly restarts it.
+
+## Packaged overlay
+
+The ready-to-install package provides `/usr/lib/layer-recorder/overlay/bin/gsr-ui`. After saving/stopping GSR capture, add an override to your existing **user** GSR service (`systemctl --user edit YOUR-GSR.service`):
+
+```ini
+[Unit]
+Wants=katman.service
+After=katman.service
+
+[Service]
+ExecStart=
+ExecStart=/usr/lib/layer-recorder/overlay/bin/gsr-ui launch-daemon
+```
+
+Then reload the user service manager and restart that GSR service. Keep `/usr/bin` on its PATH so the bridge can find `layer`. This does not replace the system overlay binary. Remove the override to return to the distribution overlay. Use your real service name; the package never guesses it or restarts active captures.
+
+Layer Settings → GSR Integration edits shared shortcuts and optionally synchronizes codec/replay length. Backups stay private under the user state directory. The bundled overlay's `reload-config` rebinds shortcuts immediately; capture encoding changes apply on the next recording/replay start.

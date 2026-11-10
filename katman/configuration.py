@@ -7,7 +7,8 @@ from pathlib import Path
 
 DEFAULTS = {
     'library': '~/Videos/Layer', 'fps': 60, 'bitrate': 18000, 'buffer': 300,
-    'auto_replay': False, 'gpu_vendor': 'auto', 'capture_backend': 'auto',
+    'auto_replay': False, 'replay_short':60, 'replay_long':300,
+    'shortcuts_enabled':True, 'shortcuts':{'ui':'Meta+Alt+Z','save-1':'Meta+Alt+F7','save-5':'Meta+Alt+F8','record':'Meta+Alt+F9','replay':'Meta+Alt+F10'}, 'gsr_sync':False, 'gpu_vendor': 'auto', 'capture_backend': 'auto',
     'capture_codec': 'h264', 'render_device': 'auto', 'wf_no_dmabuf': False,
     'export_codec': 'libx264', 'export_quality': 20,
     'gsr_binary': 'auto', 'wf_recorder_binary': '',
@@ -21,9 +22,9 @@ def validate_config(values):
     unknown=set(values)-set(DEFAULTS)
     if unknown:raise ValueError('Unknown setting: '+', '.join(sorted(unknown)))
     result=copy.deepcopy(DEFAULTS);result.update(values)
-    for key,low,high in [('fps',1,240),('bitrate',1000,200000),('buffer',300,300),('export_quality',0,51)]:
+    for key,low,high in [('fps',1,240),('bitrate',1000,200000),('buffer',30,3600),('replay_short',1,3600),('replay_long',1,3600),('export_quality',0,51)]:
         if type(result[key]) is not int or not low<=result[key]<=high:raise ValueError(f'{key} must be an integer from {low} to {high}.')
-    for key in ('auto_replay','wf_no_dmabuf'):
+    for key in ('auto_replay','wf_no_dmabuf','shortcuts_enabled','gsr_sync'):
         if type(result[key]) is not bool:raise ValueError(key+' must be true or false.')
     for key,choices in [('gpu_vendor',('auto','nvidia','amd','intel')),('capture_backend',('auto','gsr','wf-recorder')),('capture_codec',('h264','hevc','av1')),('export_codec',CODECS)]:
         if result[key] not in choices:raise ValueError(key+' must be one of: '+', '.join(choices))
@@ -32,6 +33,15 @@ def validate_config(values):
     if not result['library'].strip() or not result['gsr_binary'].strip():raise ValueError('Library and GSR program cannot be empty.')
     device=result['render_device']
     if device!='auto' and not __import__('re').fullmatch(r'/dev/dri/renderD\d+',device):raise ValueError('render_device must be auto or /dev/dri/renderD<number>.')
+    if not result['replay_short']<=result['replay_long']<=result['buffer']:raise ValueError('Replay durations must satisfy short ≤ long ≤ buffer.')
+    from .shortcuts import ACTIONS,parse
+    if not isinstance(result['shortcuts'],dict) or set(result['shortcuts'])!=set(ACTIONS):raise ValueError('Configure each of the five Layer shortcut actions.')
+    seen=set()
+    for sequence in result['shortcuts'].values():
+        if not isinstance(sequence,str):raise ValueError('Shortcut values must be text.')
+        pair=parse(sequence)
+        if pair and pair in seen:raise ValueError('Each Layer action needs a different shortcut.')
+        if pair:seen.add(pair)
     return result
 
 

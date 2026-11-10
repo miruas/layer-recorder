@@ -4,6 +4,17 @@
   "bitrate": 18000,
   "buffer": 300,
   "auto_replay": false,
+  "replay_short": 60,
+  "replay_long": 300,
+  "shortcuts_enabled": true,
+  "shortcuts": {
+    "ui": "Meta+Alt+Z",
+    "save-1": "Meta+Alt+F7",
+    "save-5": "Meta+Alt+F8",
+    "record": "Meta+Alt+F9",
+    "replay": "Meta+Alt+F10"
+  },
+  "gsr_sync": false,
   "gpu_vendor": "intel",
   "capture_backend": "auto",
   "capture_codec": "h264",

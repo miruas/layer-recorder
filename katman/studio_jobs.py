@@ -53,8 +53,8 @@ def stabilize(path,clip,cancel=None,progress=None):
 
 
 def transcribe(path,model,cancel=None,progress=None,language='auto'):
-    cfg=settings();engine=Path(cfg['speech_binary']).expanduser() if cfg['speech_binary'] else APP/'speech/whisper-cli';weights=Path(cfg['speech_model']).expanduser() if cfg['speech_model'] else APP/'speech/ggml-base.bin'
-    if not engine.is_file() or not weights.is_file():raise RuntimeError('The offline speech engine/model is missing. Run tools/build-native.py whisper and tools/download-model.py, or set speech_binary and speech_model.')
+    cfg=settings();engine=Path(cfg['speech_binary']).expanduser() if cfg['speech_binary'] else APP/'speech/whisper-cli';weights=Path(cfg['speech_model']).expanduser() if cfg['speech_model'] else (CACHE/'speech/ggml-base.bin' if (CACHE/'speech/ggml-base.bin').is_file() else APP/'speech/ggml-base.bin')
+    if not engine.is_file() or not weights.is_file():raise RuntimeError('The offline speech engine/model is missing. Run layer-download-model for the packaged speech engine, or build the source speech component and set speech_binary/speech_model.')
     with tempfile.TemporaryDirectory(prefix='layer-captions-') as directory:
         root=Path(directory);mix=root/'mix.wav';export_studio(path,mix,{'audio_only':True},lambda p:progress(p*.25) if progress else None,cancel,model)
         wav=root/'speech.wav';run_process(['ffmpeg','-v','error','-y','-i',str(mix),'-ar','16000','-ac','1','-c:a','pcm_s16le',str(wav)],root/'convert.log',cancel)

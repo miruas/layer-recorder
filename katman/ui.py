@@ -687,46 +687,12 @@ class Window(EditorTools, QMainWindow):
         self.error_text.setText(str(error)[-2200:]);self.error_bar.show()
 
     def show_settings(self):
-        cfg=settings();dialog=QDialog(self);dialog.setWindowTitle('Layer — Settings');dialog.resize(660,700)
-        outer=QVBoxLayout(dialog);outer.setContentsMargins(16,12,16,12)
-        scroll=QScrollArea();scroll.setWidgetResizable(True);body=QWidget();vl=QVBoxLayout(body);vl.setContentsMargins(12,12,12,12);vl.setSpacing(20);scroll.setWidget(body);outer.addWidget(scroll,1)
-        vl.addWidget(label('Settings','title'))
-        subtitle=label('Capture preferences and desktop integration.','muted');subtitle.setWordWrap(True);vl.addWidget(subtitle)
-        form=QFormLayout();form.setSpacing(16);form.setLabelAlignment(Qt.AlignLeft|Qt.AlignVCenter)
-        path=QLineEdit(cfg['library']);path.setAccessibleName('Recording folder');pr=QHBoxLayout();pr.setSpacing(8);pr.addWidget(path,1)
-        def browse():
-            picked=QFileDialog.getExistingDirectory(dialog,'Recording folder',path.text())
-            if picked:path.setText(picked)
-        pr.addWidget(button('Browse',browse));form.addRow('Save recordings to',pr)
-        fps=QComboBox();fps.addItems(sorted(set(['30','60','120',str(cfg['fps'])]),key=int));fps.setCurrentText(str(cfg['fps']));fps.setAccessibleName('Capture frame rate');form.addRow('Frame rate',fps)
-        bitrate=QSpinBox();bitrate.setRange(4000,80000);bitrate.setSingleStep(1000);bitrate.setSuffix(' kbps');bitrate.setValue(cfg['bitrate']);bitrate.setAccessibleName('Video bitrate per display');form.addRow('Bitrate per display',bitrate)
-        auto=QCheckBox('Enable replay when the capture service starts');auto.setChecked(cfg.get('auto_replay',False));form.addRow(auto)
-        vendor=QComboBox()
-        for title,key in [('Automatic','auto'),('NVIDIA · NVENC','nvidia'),('AMD · VA-API','amd'),('Intel · VA-API','intel')]:vendor.addItem(title,key)
-        vendor.setCurrentIndex(vendor.findData(cfg['gpu_vendor']));vendor.setAccessibleName('GPU profile');form.addRow('GPU profile',vendor)
-        codec=QComboBox();codec.addItems(['h264','hevc','av1']);codec.setCurrentText(cfg['capture_codec']);codec.setAccessibleName('Capture codec');form.addRow('Capture codec',codec)
-        vl.addLayout(form)
-        appearance=label('Appearance','heading');vl.addWidget(appearance)
-        desc=label('Layer follows an optional system theme-manager when available and uses its built-in palette otherwise. Theme updates keep your edits intact.','muted');desc.setWordWrap(True);vl.addWidget(desc)
-        vl.addWidget(label('Suggested keyboard shortcuts','heading'))
-        shortcuts=QTableWidget(5,2);shortcuts.setHorizontalHeaderLabels(['Action','Shortcut']);shortcuts.verticalHeader().hide();shortcuts.setShowGrid(False)
-        shortcuts.setEditTriggers(QAbstractItemView.NoEditTriggers);shortcuts.setSelectionMode(QAbstractItemView.NoSelection);shortcuts.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        for row,(action,key) in enumerate([('Open Layer','Super+Alt+Z'),('Save last minute','Super+Alt+F7'),('Save last five minutes','Super+Alt+F8'),('Start / stop recording','Super+Alt+F9'),('Enable / disable replay','Super+Alt+F10')]):
-            shortcuts.setItem(row,0,QTableWidgetItem(action));shortcuts.setItem(row,1,QTableWidgetItem(key))
-        shortcuts.setFixedHeight(200);vl.addWidget(shortcuts)
-        info=label('Replay keeps a rolling five-minute RAM buffer. Older unsaved segments are removed automatically. Capture changes apply the next time the recording engine starts. Add the supplied compositor bindings to enable the suggested shortcuts.','muted');info.setWordWrap(True);vl.addWidget(info)
-        buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel);buttons.button(QDialogButtonBox.Save).setText('Save changes');buttons.button(QDialogButtonBox.Save).setObjectName('primary');outer.addWidget(buttons)
-        buttons.rejected.connect(dialog.reject)
-        def save():
-            try:
-                directory=Path(path.text()).expanduser();directory.mkdir(parents=True,exist_ok=True)
-                if not directory.is_dir():raise ValueError('Choose a valid folder.')
-                cfg.update(library=str(directory),fps=int(fps.currentText()),bitrate=bitrate.value(),auto_replay=auto.isChecked(),gpu_vendor=vendor.currentData(),capture_codec=codec.currentText())
-                from .configuration import validate_config
-                validate_config(cfg)
-                atomic_json(__import__('katman.common',fromlist=['SETTINGS_FILE']).SETTINGS_FILE,cfg);dialog.accept();self.refresh_archive()
-            except Exception as e:QMessageBox.warning(dialog,'Could not save settings',str(e))
-        buttons.accepted.connect(save);dialog.exec()
+        from .settings_dialog import SettingsDialog
+        dialog=SettingsDialog(self)
+        if dialog.exec():
+            self.refresh_archive()
+            if dialog.apply_now and not self.test_mode:self.start_task(lambda task:request('reload-settings'),lambda _:self.poll(),self.show_error)
+        dialog.deleteLater()
 
     def setup_tray(self):
         self.tray=QSystemTrayIcon(icon("layers",self.theme.tokens["primary"],24),self)

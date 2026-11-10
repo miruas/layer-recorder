@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+- Native Recording, Replay, Shortcuts and GSR Integration settings.
+- Explicit H.264/H.265/AV1, configurable RAM buffer and two replay presets.
+- Editable owned Hyprland bindings, conflict reporting and selective backed-up GSR preference updates.
+- Patched GSR overlay reloads shared hotkeys immediately.
+- Compiled Arch/CachyOS x86_64 release package, corresponding sources, checksums and source-build guide.
+- User-cache subtitle model downloads for read-only system installations.
+
+
 ## 0.5.1 — 2026-11-10
 
 - Convert the standalone distribution into a GPU Screen Recorder source fork based on official tag6.1.7, preserving its full public Git ancestry and copyright notices.
