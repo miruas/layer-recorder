@@ -7,16 +7,19 @@ def hyprland_available():
 
 def displays(program,targets=None):
     p=subprocess.run([program,'--list-monitors'],capture_output=True,text=True,timeout=15)
-    if p.returncode:raise RuntimeError('GSR display discovery failed: '+p.stderr[-1000:])
+    standalone=lambda target:target in ('portal','focused') or target.isdecimal() or target.startswith('/dev/video')
+    if p.returncode and (not targets or not all(standalone(target) for target in targets)):raise RuntimeError('GSR display discovery failed: '+p.stderr[-1000:])
     result=[];x=0
     for line in p.stdout.splitlines():
         match=re.fullmatch(r'([^|]+)\|(\d+)x(\d+)',line.strip())
         if not match:continue
         name,w,h=match.groups();w,h=int(w),int(h)
         result.append(dict(name=name,label=name,x=x,y=0,width=w,height=h,logical_width=w,logical_height=h,layout_provider='synthetic'));x+=w
-    if hyprland_available():
+    if result and hyprland_available():
         try:
-            p=subprocess.run(['hyprctl','monitors','-j'],capture_output=True,text=True,timeout=2);layout={m['name']:m for m in json.loads(p.stdout) if not m.get('disabled')}
+            p=subprocess.run(['hyprctl','monitors','-j'],capture_output=True,text=True,timeout=2)
+            if p.returncode:raise ValueError('Hyprland geometry unavailable')
+            layout={m['name']:m for m in json.loads(p.stdout) if not m.get('disabled')}
             for item in result:
                 m=layout.get(item['name'])
                 if not m:continue

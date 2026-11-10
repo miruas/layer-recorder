@@ -1,3 +1,4 @@
+import subprocess
 # SPDX-License-Identifier: GPL-3.0-only
 import json
 import os
@@ -28,6 +29,10 @@ def run_factory(monitors, hyprland=None, failure=None):
 
 
 class MonitorInventory(unittest.TestCase):
+    def test_explicit_portal_does_not_require_successful_direct_enumeration(self):
+        with patch.dict('os.environ',{},clear=True),patch('katman.platform_capture.subprocess.run',return_value=subprocess.CompletedProcess([],1,'','Direct output discovery unavailable')):
+            self.assertEqual(displays('synthetic-gsr',['portal'])[0]['name'],'portal')
+
     def test_parses_gsr_monitors_into_horizontal_synthetic_layout(self):
         monitors = 'SYNTH-LEFT|1920x1080\nnot a monitor line\nSYNTH-RIGHT|1280x720\n'
         with patch.dict(os.environ, {'HYPRLAND_INSTANCE_SIGNATURE': ''}), \
