@@ -1,43 +1,45 @@
-# Capture architecture
+# Capture and editor architecture
 
-Layer 0.7 moves capture supervision, JSON IPC, RAM allocation, incremental segment indexing, replay retention, ordinary-recording spooling and independent-source snapshots into `native/recorder` (Rust). `capture.py`, `daemon.py` and `buffer_storage.py` are compatibility adapters; there is no Python capture backend or automatic wf-recorder fallback.
-
-GSR produces every video and audio track. FFmpeg remains the lossless container-copy/probe tool when saving, and the existing Python editor/export pipeline remains intact. The metadata/configuration bridge is one persistent Python process; it never receives media. The PipeWire graph is one persistent `pw-dump --monitor` stream rather than repeated complete subprocess dumps four times a second.
-
-Status is cached separately from capture commands, so a replay save or encoder flush does not block status queries. The control socket retains newline JSON request/response compatibility, private permissions, singleton locking and existing action names. The queue is bounded; shutdown preserves ordinary recordings.
-
-Each selected display has its own GSR encoder process. Each discovered application/role or microphone group has a GSR audio-only producer. Node selectors preserve voice/media separation; changing nodes retires one generation and starts another without erasing prior media. Audio-only GSR cannot use native replay, so Rust owns a common segmented timeline and bounded tmpfs ring. Ordinary recordings move older **closed** segments to a durable cache spool; replay never silently falls back to disk. First-frame timestamps align streams, and saved `.katman` projects retain version-1 independent media/timing compatibility.
-
-GSR is the authoritative source inventory. Optional compositor adapters enrich logical geometry, application names and shortcuts. Without Hyprland, placement is explicitly synthetic horizontal layout and application naming falls back to Desktop. See [compatibility](GSR_COMPATIBILITY.md) for upstream features and remaining gaps.
-
-## Existing editor and media format reference
+Layer 0.8 combines a Rust recording service and a single native Rust archive/editor. The pinned Layer GSR fork produces every captured video/audio track. Python remains a headless configuration bridge and media worker; there is no Python GUI, automatic wf-recorder fallback or separate second editor window.
 
 ## Data flow
 
 ```text
-GSR source inventory ── GSR video producers ── hardware-encoded segments ─┐
-PipeWire events ── GSR independent audio producers ── Opus segments ─────────────────┤
-                                                                         ↓
-                                                         private RAM ring (300s)
-                                                                         ↓ save
-                                                        project.katman + media/
-                                                                         ↓ edit
-                                                   independent Studio tracks/clips
-                                                                         ↓
-                                                shared FFmpeg preview/export graph
+GSR source inventory -> independent GSR video producers ----+
+PipeWire graph or GSR device inventory -> GSR audio --------+-> Rust RAM ring
+                                                               | save
+                                                      project.katman + media/
+                                                               | open
+                                                    Rust archive/editor window
+                                                               | background jobs
+                                               Python model/render/jobs -> FFmpeg
 ```
 
-Application playback routing is preserved. Layer creates capture links to application outputs; it does not move them away from speakers/headphones. Recycled ports reconnect; a role change removes only the old owned capture link. Microphones use their appropriate source links.
+The metadata/configuration bridge never receives media. With application-audio support, one persistent `pw-dump --monitor` stream supplies dynamic application/role discovery. Without it, a startup GSR audio-device inventory provides separate output-monitor and microphone tracks, with an explicit loss of application separation. With no usable audio devices, display capture can continue with a warning.
 
-GPU encoding happens before video enters the RAM ring. Each display and audio role has separate media/timing metadata. Closed segment selection protects replay endpoints; capture warnings record unavailable tails instead of claiming full coverage.
+## Capture service
 
-## RAM versus disk
+`native/recorder` owns capture supervision, JSON IPC, RAM allocation, incremental segment indexing, replay retention, ordinary-recording spooling and independent-source snapshots. `capture.py`, `daemon.py` and `buffer_storage.py` are compatibility entry points/clients. Status is cached separately from capture commands, so encoder flushes and saves do not hold the status-query path.
 
-Replay media and capture segment metadata live under `/dev/shm/layer-<uid>/buffer-*`, in a directory owned by the user with mode0700. The filesystem must be tmpfs/ramfs. Layer does not silently switch replay to SSD.
+Each display has its own hardware-encoded producer. PipeWire application/role generations and microphones have separate GSR audio-only producers. Exact node selectors preserve voice/media separation when the upstream application exposes distinct streams. A changed node retires one generation and starts another; earlier captured media remains available. Playback routes are not moved away from speakers/headphones.
 
-Older unsaved replay segments expire. During ordinary recording, closed segments outside the replay ring are copied into a durable spool under the application cache. Saved ordinary recordings can therefore combine disk-spooled history and the current RAM ring without unbounded ring growth.
+GSR audio-only capture does not use native replay. Rust retains all producers on a common segmented timeline. First-packet sidecars align streams; snapshot metadata records timing, presence and coverage warnings. Saves omit out-of-window and genuinely silent application sources while preserving independent editable media.
 
-Saved projects use the configured recording directory. Thumbnails, waveforms, proxies, stabilization analysis and rendered previews use the application cache. Uninstall preserves projects/settings/caches. Normal shutdown removes the active capture ring; capture/save failures may retain diagnostic/recoverable pieces.
+GSR is authoritative for capture inventory. Optional Hyprland, Sway and X11 adapters enrich geometry and application naming. Missing metadata providers do not block capture. Native GNOME/KWin Wayland use `Desktop` and synthetic placement. See [Desktop providers](desktop-providers.md).
+
+## RAM and disk
+
+Replay media and segment metadata live in private mode-0700 directories under `/dev/shm/layer-<uid>/buffer-*`. The filesystem must be tmpfs/ramfs and have enough free memory. Replay never silently switches to disk.
+
+Expired unsaved replay segments are removed. During ordinary recording, older closed segments move to a durable application-cache spool; a save can combine spooled history and the current RAM ring. Saved projects use the configured library. Thumbnails, waveforms, proxies, stabilization data and rendered previews use caches. Normal shutdown removes the active ring; failures may retain recoverable diagnostics/media. Uninstall preserves user projects/settings/caches.
+
+## Native archive/editor
+
+`native/editor` runs one eframe window for the library, composition, timeline and inspector. Project reads, fonts, settings resolution, media analysis, preview/export and save work are dispatched away from the UI thread. Workers return tagged results so stale document jobs cannot overwrite a newly opened edit. Subprocess cancellation and playback teardown do not synchronously wait on the GUI thread.
+
+The Rust model preserves version-1 JSON fields and original sources. It supports independent clips, undo/redo, splitting/trimming, speed/reverse/freeze, keyframes, transforms, annotations and subtitles. The Python media worker uses the same compositor for paused frames, audiovisual preview and export. Audio waveform analysis is cached; previews may use proxies while export uses originals. Voiceover is a temporary GSR audio-only recording imported as a separate source. Batch export processes saved projects without overwriting their media.
+
+The public interface uses a neutral palette. Personal theme integrations are not part of this source tree.
 
 ## Project format
 
@@ -45,29 +47,29 @@ Saved projects use the configured recording directory. Thumbnails, waveforms, pr
 recording/
   project.katman
   media/
-    independently captured or imported sources
+    independent captured or imported sources
 ```
 
-The JSON project uses format `katman`, version1. Sources include relative media paths, type/name, timeline start/trim and media duration. `studio` stores independent tracks/clips, transforms, animation, audio processing, timed annotations and subtitles. Original media is not overwritten by editing.
+JSON format `katman`, version 1, stores sources and their relative paths, timing and media duration. The `studio` model stores tracks/clips, transforms, animation, audio processing, timed annotations and subtitles. Editing saves decisions and never overwrites original media. Keep the project with its media directory.
 
-Paths loaded from a project must remain inside its project folder. Treat imported media/projects as untrusted data and keep FFmpeg and Qt updated. Optional LUT/stabilization paths refer to local analysis/assets; moving a project does not create a media-relinking workflow.
+Loaded source paths must remain within the project directory. Keep media decoders updated when opening imported files. Optional LUT and stabilization paths refer to local assets/analysis; the application does not add a media-relinking or project-management system.
 
 ## Modules
 
 | Module | Responsibility |
 | --- | --- |
-| `configuration.py` | Defaults, profile generation, strict settings validation |
-| `hardware.py` | GPU discovery, GSR capability parsing, vendor-neutral command planning |
-| `buffer_storage.py` | Private memory filesystem allocation |
-| `native/recorder/src` | Rust capture lifecycle, discovery, RAM ring/spool, snapshots and IPC |
-| `capture.py` / `daemon.py` / `buffer_storage.py` | Python compatibility clients / native executable entry points |
-| `audio_identity.py` / `identity.py` | Stream roles and application-only naming |
-| `studio_model.py` | Independent edits, timing and animation |
-| `studio_render.py` | One FFmpeg compositor for frames, playback and export |
-| `studio_jobs.py` | Proxies, stabilization, tracking and local subtitles |
-| `studio*.py`, `ui.py`, `theme.py` | Native editor/library, jobs and semantic theme roles |
-| `bridge.py` | Detached, idempotent GSR action mirroring |
+| `native/recorder/src` | Capture lifecycle, discovery, RAM ring/spool, snapshots and IPC. |
+| `native/editor/src` | Native archive/editor, Rust document model, jobs, IPC, playback and voiceover. |
+| `configuration.py`, `gsr_preferences.py` | Layer validation/profiles and read-only resolution of shared GSR capture preferences. |
+| `hardware.py`, `audio_plan.py`, `native_platform.py` | Capability validation and GSR capture/audio plans. |
+| `platform_capture.py`, `identity.py`, `audio_identity.py` | Optional desktop metadata and readable application/role identity. |
+| `editor_worker.py` | Headless background media job protocol. |
+| `studio_model.py`, `studio_render.py`, `studio_jobs.py` | Media-model validation, FFmpeg composition and analysis/import/subtitle jobs. |
+| `ui.py` | Launcher for the native Rust application. |
+| `bridge.py`, patched GSR UI | Detached idempotent action mirroring and shared normal-GSR control. |
 
-## Compatibility boundaries
+## Settings and limits
 
-Capture is GSR/PipeWire based, with optional Hyprland integration. KDE/GNOME/X11 session testing remains open. GPU Screen Recorder chooses its capture device. Source separation cannot unmix a single upstream audio stream. Motion tracking and speech recognition require review. Project versioning, autosave recovery UI and media relinking are not new features of this release.
+Normal GSR `config_ui` is the default source for capture codec, quality, FPS, bitrate, replay buffer and short/long saves. The read-only resolver preserves exact codec variants and leaves library/export preferences separate. Existing captures retain their starting profile until restarted/reloaded. The overlay owns shared shortcut editing.
+
+GSR chooses capture hardware; export-device choices are separate. A single combined upstream audio stream cannot be unmixed. HDR codec passthrough is not an HDR color-managed editor guarantee. See [compatibility and remaining gaps](GSR_COMPATIBILITY.md) and [portability evidence](PORTABILITY_AUDIT.md).

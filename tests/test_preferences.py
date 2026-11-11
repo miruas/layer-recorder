@@ -44,6 +44,20 @@ class Preferences(unittest.TestCase):
             cfg=profile('nvidia');cfg.update(capture_codec='hevc',buffer=600,gsr_sync=True)
             with patch('katman.gsr_integration.config_path',return_value=file),patch.dict('os.environ',{'XDG_STATE_HOME':str(root/'state')}),patch('katman.gsr_integration.shutil.which',return_value=None):backup=gsr.update(cfg,{'overlay':'Ctrl+Alt+Z'})
             value=json.loads(file.read_text());self.assertEqual(value['main']['unrelated'],'keep');self.assertEqual(value['record']['record_options']['audio_codec'],'opus');self.assertEqual(value['replay']['time'],600);self.assertEqual(value['record']['record_options']['codec'],'hevc');self.assertFalse(value['record']['record_options']['show_notifications']);self.assertEqual(json.loads(backup.read_text()),original)
+    def test_capture_codecs_preserve_hdr_and_auto_but_reject_unknown(self):
+        for codec in ('auto','h264','hevc','hevc_10bit','hevc_hdr','av1','av1_10bit','av1_hdr'):
+            self.assertEqual(validate_config({'capture_codec':codec})['capture_codec'],codec)
+        with self.assertRaises(ValueError):validate_config({'capture_codec':'vp9'})
+    def test_capture_quality_presets_and_custom_validate(self):
+        for quality in ('custom','medium','high','very_high','ultra'):
+            self.assertEqual(validate_config({'capture_quality':quality})['capture_quality'],quality)
+        with self.assertRaises(ValueError):validate_config({'capture_quality':'lossless'})
+    def test_gsr_preference_flags_and_large_durations(self):
+        cfg=validate_config({'buffer':86400,'replay_short':7200,'replay_long':43200,'gsr_preferences':False,'gsr_config':'/tmp/gsr-config'})
+        self.assertEqual((cfg['buffer'],cfg['replay_short'],cfg['replay_long']),(86400,7200,43200))
+        self.assertFalse(cfg['gsr_preferences'])
+        for values in ({'buffer':1},{'replay_short':86401},{'gsr_preferences':'yes'},{'gsr_config':1},{'buffer':86400,'replay_long':86401}):
+            with self.subTest(values=values),self.assertRaises(ValueError):validate_config(values)
     def test_reload_settings_forwards_the_facade_request(self):
         r=Recorder.__new__(Recorder)
         with patch('katman.capture.request',return_value={'ok':True}) as request:

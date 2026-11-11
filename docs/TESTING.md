@@ -4,7 +4,7 @@
 
 ```sh
 python -m unittest discover -s tests -v
-QT_QPA_PLATFORM=offscreen python tools/smoke-ui.py
+xvfb-run -a python tools/smoke-ui.py
 python tools/check-public-tree.py
 ```
 
@@ -12,7 +12,7 @@ Tests generate their own colored video/tone media in temporary directories. They
 
 Coverage includes decoded composition pixels, independent audio, cropping, privacy effects, transforms, keyframes, splits/trims/fades, speed/reverse/freeze, subtitles, source-preserving imports, proxies/stabilization, original-media hashes, RAM/spool continuity, source-window membership, PipeWire role metadata, vendor commands, settings validation and installer ownership/idempotence.
 
-The native settings smoke test uses a temporary configuration/library, does not start capture and verifies that selecting a GPU profile/codec survives Save. Screenshots are optional local QA output; none are bundled.
+The native Rust startup smoke test isolates configuration and IPC, and checks normal startup/close, a slow font lookup and a blocked project read. It never starts real desktop capture. Screenshots are optional local QA output; none are bundled.
 
 ## Real hardware
 
@@ -44,3 +44,41 @@ All65 local tests passed with hardware exports enabled after importing the offic
 Run `cargo test --locked --manifest-path native/recorder/Cargo.toml`, build the core (`python tools/build-native.py recorder`), then run the Python suite. Rust tests cover private tmpfs allocation/symlink refusal, incremental graph/segment parsing, role precedence, retired-source windows, disk spooling and real FFmpeg concatenation of RAM plus spool. Python socket tests launch the real Rust daemon with explicitly synthetic CPU-generated pixels: idempotent bridge states, normal recording plus replay, save/reload preservation, shutdown saving, malformed requests and status responsiveness. They never capture the desktop.
 
 A separate isolated live run verified actual NVIDIA GSR HEVC display capture and GSR Opus application/microphone segments, with independent version-1 project media, no capture warning and no Hyprland API environment. This does not certify other compositor sessions or physical AMD/Intel hardware under the new core. No new multi-hour soak is claimed.
+
+## 0.8 portable Rust Studio candidate
+
+The 2026-11-12 candidate uses one native Rust archive/editor and a headless media
+worker. The local suite completed 149 Python tests with three opt-in hardware
+checks skipped, plus 23 editor and 10 recorder Rust tests. A separate hardware
+smoke check exercised HEVC export with the packaged FFmpeg on NVIDIA NVENC and
+AMD VA-API. This does not certify Intel encoding or AMD/Intel desktop capture.
+
+The same x86_64 Flatpak was installed in two KVM guests:
+
+| Guest | Display sessions | Result |
+| --- | --- | --- |
+| Debian 13 | Xfce/X11 and nested Weston Wayland | 36 backend tests, one expected GPU-only skip; seven GUI checks; six startup regressions passed |
+| openSUSE Leap 16 | Xfce/X11 and nested KWin Wayland | Same checks passed |
+
+The backend suite covers ordinary recording/replay with synthetic pixels,
+independent sources, worker previews, captions, stabilization, overlays, batch
+exports, waveforms and tracking. GUI checks cover wide and 950-pixel layouts,
+voiceover/export/settings dialogs and clean automatic closure. Startup checks
+inject a three-second font lookup and a blocked project read; all twelve cases
+completed in 0.766–0.916 seconds. These guests use software rendering, not GPU
+passthrough. They do not validate portal consent, privileged KMS/global-input
+helpers, GNOME/Mutter or physical Intel hardware. Native NVIDIA UI-driver stalls
+are not ruled out by VM startup results.
+
+Package tests found and fixed missing PNG/subtitle renderer capabilities and a
+vid.stab binary-header parsing issue. The builder now requires the editor's
+critical filters/codecs; stabilization analysis explicitly writes portable ASCII.
+Run package integration tests with a disk-backed `TMPDIR`; a small tmpfs is
+correctly rejected by the ordinary-recording spool capacity check.
+
+The corresponding-source packer was exercised separately: all 22,093 files in
+the development archive matched its manifest, and both Rust crates resolved
+their Linux dependencies offline from the archive. Reviewed Windows/WASM binary
+fixtures are omitted with original hashes and modified Cargo file checksums;
+unknown compiled inputs block source packaging. Release archives must be rebuilt
+from the clean commit used by the matching binary.

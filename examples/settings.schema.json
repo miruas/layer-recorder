@@ -23,8 +23,8 @@
     "buffer": {
       "type": "integer",
       "default": 300,
-      "minimum": 30,
-      "maximum": 3600
+      "minimum": 2,
+      "maximum": 86400
     },
     "auto_replay": {
       "type": "boolean",
@@ -52,9 +52,14 @@
       "type": "string",
       "default": "h264",
       "enum": [
+        "auto",
         "h264",
         "hevc",
-        "av1"
+        "hevc_10bit",
+        "hevc_hdr",
+        "av1",
+        "av1_10bit",
+        "av1_hdr"
       ]
     },
     "render_device": {
@@ -107,13 +112,13 @@
       "type": "integer",
       "default": 60,
       "minimum": 1,
-      "maximum": 3600
+      "maximum": 86400
     },
     "replay_long": {
       "type": "integer",
       "default": 300,
       "minimum": 1,
-      "maximum": 3600
+      "maximum": 86400
     },
     "shortcuts_enabled": {
       "type": "boolean",
@@ -168,6 +173,35 @@
       "maxItems": 16,
       "uniqueItems": true,
       "default": []
+    },
+    "gsr_preferences": {
+      "type": "boolean",
+      "default": true
+    },
+    "gsr_source": {
+      "type": "string",
+      "default": "gsr",
+      "enum": [
+        "gsr",
+        "layer",
+        "auto",
+        "off"
+      ]
+    },
+    "gsr_config": {
+      "type": "string",
+      "default": ""
+    },
+    "capture_quality": {
+      "type": "string",
+      "default": "custom",
+      "enum": [
+        "custom",
+        "medium",
+        "high",
+        "very_high",
+        "ultra"
+      ]
     }
   }
 }

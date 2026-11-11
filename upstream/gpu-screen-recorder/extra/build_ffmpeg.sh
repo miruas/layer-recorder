@@ -1,4 +1,5 @@
 #!/bin/sh
+# Modified by Layer on 2026-11-11: enable segmented independent-source RAM replay.
 
 # Builds ffmpeg, or one of the libraries that ffmpeg depends on, from source as a
 # static library with lto. Only the components that gpu-screen-recorder uses are enabled.
@@ -131,7 +132,7 @@ case $library in
         require_program nasm
 
         encoders=aac,flac,libx264,libopus,libmp3lame,h264_nvenc,hevc_nvenc,av1_nvenc,h264_vaapi,hevc_vaapi,vp8_vaapi,vp9_vaapi,h264_vulkan,hevc_vulkan
-        muxers=mp4,mov,matroska,webm,flv,mpegts,hls,whip,mp3
+        muxers=mp4,mov,matroska,webm,flv,mpegts,hls,whip,mp3,segment
         protocols=file,pipe,tcp,udp,http,https,tls,rtmp,rtmps,libsrt
         filters=abuffer,abuffersink,amix,aresample,aformat,anull
 

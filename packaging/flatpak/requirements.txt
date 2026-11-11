@@ -1,0 +1,5 @@
+# Pinned compatible major versions; sources and wheel license texts are required
+# alongside any distributed release. The application has no Qt dependency.
+Pillow==12.3.0
+numpy==2.5.4
+# OpenCV is built from pinned sources without its own FFmpeg/video decoder.

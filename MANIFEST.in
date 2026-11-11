@@ -18,3 +18,7 @@ recursive-include upstream *.c *.h *.sh *.build *.wrap *.1 *.conf *.xml *.patch 
 
 include native/recorder/Cargo.toml native/recorder/Cargo.lock
 recursive-include native/recorder/src *.rs
+
+include native/editor/Cargo.toml native/editor/Cargo.lock
+recursive-include native/editor/src *.rs
+recursive-include packaging *.txt *.xml *.desktop *.Dockerfile *.sh

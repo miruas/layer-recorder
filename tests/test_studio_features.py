@@ -51,7 +51,11 @@ class StudioFeatures(unittest.TestCase):
     def test_source_proxy_and_stabilization_and_audio_only(self):
         self.model=from_project(self.project);atomic_json(self.path,self.project)
         self.assertEqual(build_proxies(self.path),2)
-        c=self.model['tracks'][0]['clips'][0];file=stabilize(self.path,c);self.assertTrue(Path(file).is_file());c['stabilization']=file
+        c=self.model['tracks'][0]['clips'][0];file=stabilize(self.path,c);self.assertTrue(Path(file).is_file())
+        # Accuracy 9 is a TAB byte in libvidstab 1.1.1's broken binary header.
+        # Require the portable text format before applying the real transform.
+        self.assertTrue(Path(file).read_bytes().startswith(b'VID.STAB 1\n'))
+        c['stabilization']=file
         result,info=self.render('stable.mp4');self.assertAlmostEqual(float(info['format']['duration']),2,delta=.1)
         result,info=self.render('audio.m4a',{'audio_only':True});self.assertTrue(all(s['codec_type']=='audio' for s in info['streams']))
     def test_cpu_av1_and_nvidia_export(self):

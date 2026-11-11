@@ -4,6 +4,10 @@ import copy
 import hashlib
 import json
 import math
+import os
+import selectors
+import time
+from contextlib import contextmanager
 import subprocess
 import tempfile
 from pathlib import Path
@@ -23,15 +27,6 @@ def preview_file(path,model,cancel=None,progress=None,width=960):
     return str(dest)
 
 
-def frame_image(path,model,t,cancel=None,width=960):
-    from PySide6.QtGui import QImage
-    with tempfile.TemporaryDirectory(prefix='layer-frame-') as directory:
-        output=Path(directory)/'frame.png';export_studio(path,output,preview_options(model,width),cancel=cancel,model=model,window=(t,t+.05),frame=True)
-        image=QImage(str(output))
-        if image.isNull():raise RuntimeError('The preview frame could not be decoded.')
-        return image.copy()
-
-
 def build_proxies(path,cancel=None,progress=None):
     path,project=load_project(path);root=CACHE/'studio-proxies';root.mkdir(exist_ok=True);videos=[s for s in project['sources'] if s['type']=='video']
     for index,s in enumerate(videos):
@@ -48,13 +43,15 @@ def stabilize(path,clip,cancel=None,progress=None):
     path,project=load_project(path);source=next(s for s in project['sources'] if s['id']==clip['source_id']);root=CACHE/'studio-stabilization';root.mkdir(exist_ok=True)
     key=hashlib.sha256((str(path)+source['file']+str(clip['in'])+str(clip['length'])).encode()).hexdigest()[:24];result=root/(key+'.trf')
     from .studio_render import quote
-    args=['ffmpeg','-v','error','-ss',str(clip['in']),'-i',str(path.parent/source['file']),'-t',str(clip['length']),'-an','-vf',f"format=yuv420p,vidstabdetect=shakiness=5:accuracy=9:result='{quote(result)}'",'-threads','2','-progress','pipe:1','-f','null','-']
+    # libvidstab 1.1.1's binary header parser consumes accuracy=9 as a TAB.
+    # ASCII avoids that upstream parsing bug and stays readable across releases.
+    args=['ffmpeg','-v','error','-ss',str(clip['in']),'-i',str(path.parent/source['file']),'-t',str(clip['length']),'-an','-vf',f"format=yuv420p,vidstabdetect=shakiness=5:accuracy=9:fileformat=ascii:result='{quote(result)}'",'-threads','2','-progress','pipe:1','-f','null','-']
     run_process(args,root/(key+'.log'),cancel,progress,clip['length']);return str(result)
 
 
 def transcribe(path,model,cancel=None,progress=None,language='auto'):
     cfg=settings();engine=Path(cfg['speech_binary']).expanduser() if cfg['speech_binary'] else APP/'speech/whisper-cli';weights=Path(cfg['speech_model']).expanduser() if cfg['speech_model'] else (CACHE/'speech/ggml-base.bin' if (CACHE/'speech/ggml-base.bin').is_file() else APP/'speech/ggml-base.bin')
-    if not engine.is_file() or not weights.is_file():raise RuntimeError('The offline speech engine/model is missing. Run layer-download-model for the packaged speech engine, or build the source speech component and set speech_binary/speech_model.')
+    if not engine.is_file() or not weights.is_file():raise RuntimeError('The offline speech engine/model is missing. Run layer download-model, or configure speech_binary/speech_model for your local engine and model.')
     with tempfile.TemporaryDirectory(prefix='layer-captions-') as directory:
         root=Path(directory);mix=root/'mix.wav';export_studio(path,mix,{'audio_only':True},lambda p:progress(p*.25) if progress else None,cancel,model)
         wav=root/'speech.wav';run_process(['ffmpeg','-v','error','-y','-i',str(mix),'-ar','16000','-ac','1','-c:a','pcm_s16le',str(wav)],root/'convert.log',cancel)
@@ -65,26 +62,71 @@ def transcribe(path,model,cancel=None,progress=None,language='auto'):
         return captions
 
 
+@contextmanager
+def _tracking_frames(video, cancel=None):
+    """Decode through the known CLI, never a second FFmpeg hidden in OpenCV."""
+    import numpy as np
+    info=subprocess.run(['ffprobe','-v','error','-select_streams','v:0',
+                         '-show_entries','stream=width,height','-of','json',str(video)],
+                        capture_output=True,text=True,check=True,timeout=10)
+    stream=json.loads(info.stdout)['streams'][0];w,h=int(stream['width']),int(stream['height'])
+    if not (1<=w<=16384 and 1<=h<=16384):raise ValueError('Invalid tracking preview dimensions.')
+    with tempfile.TemporaryFile() as errors:
+        process=subprocess.Popen(['ffmpeg','-v','error','-i',str(video),'-an','-sn','-dn',
+                                  '-threads','1','-pix_fmt','bgr24','-f','rawvideo','pipe:1'],
+                                 stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=errors,
+                                 # Stay in the media worker's owned process group,
+                                 # so cancelling that job also stops this decoder.
+                                 start_new_session=False)
+        selector=selectors.DefaultSelector();selector.register(process.stdout,selectors.EVENT_READ)
+        os.set_blocking(process.stdout.fileno(),False)
+        def frames():
+            pending=bytearray();frame_size=w*h*3;deadline=time.monotonic()+15
+            while True:
+                if cancel and cancel.is_set():raise RuntimeError('Tracking cancelled.')
+                if time.monotonic()>deadline:raise RuntimeError('Tracking decoder did not respond in time.')
+                if not selector.select(.1):continue
+                chunk=os.read(process.stdout.fileno(),min(262144,frame_size-len(pending)))
+                if not chunk:
+                    if pending:raise RuntimeError('Tracking decoder returned an incomplete frame.')
+                    if process.wait(timeout=5):
+                        errors.seek(0);raise RuntimeError('Could not decode tracking footage. '+errors.read()[-1200:].decode(errors='replace'))
+                    return
+                pending.extend(chunk)
+                if len(pending)==frame_size:
+                    yield np.frombuffer(bytes(pending),dtype=np.uint8).reshape(h,w,3)
+                    pending.clear();deadline=time.monotonic()+15
+        try:yield w,h,frames()
+        finally:
+            selector.close();process.stdout.close()
+            if process.poll() is None:
+                try:process.terminate()
+                except ProcessLookupError:pass
+            try:process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:process.kill()
+                except ProcessLookupError:pass
+                process.wait(timeout=2)
+
+
 def track_region(path,model,annotation,cancel=None,progress=None):
     import cv2,numpy as np
     clean=copy.deepcopy(model);clean['annotations']=[a for a in clean['annotations'] if a['id']!=annotation['id']]
     clean['subtitles']=[];start,end=annotation['start'],annotation['end'];options=preview_options(model,640);options['fps']=10
     with tempfile.TemporaryDirectory(prefix='layer-track-') as directory:
         video=Path(directory)/'tracking.mp4';export_studio(path,video,options,lambda p:progress(p*.5) if progress else None,cancel,clean,(start,end))
-        cap=cv2.VideoCapture(str(video));ok,frame=cap.read()
-        if not ok:raise RuntimeError('Could not decode tracking footage.')
-        h,w=frame.shape[:2];sx,sy=w/model['width'],h/model['height'];x,y,rw,rh=annotation['x']*sx,annotation['y']*sy,annotation['w']*sx,annotation['h']*sy
-        previous=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY);mask=np.zeros_like(previous);mask[max(0,int(y)):min(h,int(y+rh)),max(0,int(x)):min(w,int(x+rw))]=255
-        points=cv2.goodFeaturesToTrack(previous,100,.01,4,mask=mask)
-        if points is None or len(points)<4:cap.release();raise RuntimeError('This region has too little visual detail to track. Choose a larger, textured region.')
-        keys={'x':[[0,annotation['x']]],'y':[[0,annotation['y']]],'w':[[0,annotation['w']]],'h':[[0,annotation['h']]]};index=0;total=max(1,cap.get(cv2.CAP_PROP_FRAME_COUNT));stride=max(1,math.ceil(total/96))
-        try:
-            while True:
-                if cancel and cancel.is_set():raise RuntimeError('Tracking cancelled.')
-                ok,frame=cap.read()
-                if not ok:break
-                index+=1;gray=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY);tracked,status,err=cv2.calcOpticalFlowPyrLK(previous,gray,points,None)
-                if tracked is None:raise RuntimeError(f'Tracking lost at {start+index/10:.1f}s. No changes were applied.')
+        with _tracking_frames(video,cancel) as (w,h,frames):
+            frame=next(frames,None)
+            if frame is None:raise RuntimeError('Could not decode tracking footage.')
+            sx,sy=w/model['width'],h/model['height'];x,y,rw,rh=annotation['x']*sx,annotation['y']*sy,annotation['w']*sx,annotation['h']*sy
+            previous=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY);mask=np.zeros_like(previous);mask[max(0,int(y)):min(h,int(y+rh)),max(0,int(x)):min(w,int(x+rw))]=255
+            points=cv2.goodFeaturesToTrack(previous,100,.01,4,mask=mask)
+            if points is None or len(points)<4:raise RuntimeError('This region has too little visual detail to track. Choose a larger, textured region.')
+            keys={'x':[[0,annotation['x']]],'y':[[0,annotation['y']]],'w':[[0,annotation['w']]],'h':[[0,annotation['h']]]};total=max(1,math.ceil((end-start)*10));stride=max(1,math.ceil(total/96))
+            index=0
+            for index,frame in enumerate(frames,1):
+                gray=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY);tracked,status,err=cv2.calcOpticalFlowPyrLK(previous,gray,points,None)
+                if tracked is None or status is None:raise RuntimeError(f'Tracking lost at {start+index/10:.1f}s. No changes were applied.')
                 good=points[status.ravel()==1];new=tracked[status.ravel()==1]
                 if len(good)<4:raise RuntimeError(f'Tracking lost at {start+index/10:.1f}s. Shorten the range or add manual keyframes.')
                 transform,inliers=cv2.estimateAffinePartial2D(good,new,method=cv2.RANSAC)
@@ -94,6 +136,8 @@ def track_region(path,model,annotation,cancel=None,progress=None):
                 if index%stride==0:
                     for key,value in zip(('x','y','w','h'),(x/sx,y/sy,rw/sx,rh/sy)):keys[key].append([index/10,float(value)])
                 previous=gray;points=new.reshape(-1,1,2)
-                if progress:progress(.5+.5*index/total)
-        finally:cap.release()
-        return keys
+                if progress:progress(min(1,.5+.5*index/total))
+            if index and index%stride:
+                for key,value in zip(('x','y','w','h'),(x/sx,y/sy,rw/sx,rh/sy)):keys[key].append([index/10,float(value)])
+            if progress:progress(1)
+            return keys

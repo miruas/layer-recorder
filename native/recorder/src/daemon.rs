@@ -73,8 +73,10 @@ pub fn serve(root: &Path, runtime: PathBuf, cache: PathBuf) -> Result<()> {
         if recorder.autostart() {
             if let Err(e) = recorder.toggle_replay() {
                 eprintln!("Replay startup: {e:#}");
+                recorder.error(format!("Replay startup: {e:#}"));
             }
         }
+        *actor_cache.lock().unwrap() = recorder.status();
         let mut last_tick = 0.;
         while !actor_stop.load(Ordering::Relaxed) {
             match rx.recv_timeout(Duration::from_millis(100)) {

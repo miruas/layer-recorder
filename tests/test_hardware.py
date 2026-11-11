@@ -32,3 +32,24 @@ class Profiles(unittest.TestCase):
             for index,vendor in enumerate(('0x10de','0x1002','0x8086')):
                 p=root/f'renderD{128+index}'/'device';p.mkdir(parents=True);(p/'vendor').write_text(vendor)
             self.assertEqual([d['vendor'] for d in devices(root)],['nvidia','amd','intel'])
+    def test_capture_quality_preset_uses_qp_and_custom_uses_cbr_bitrate(self):
+        cfg=profile('amd')
+        cfg['capture_quality']='high'
+        args,_=capture_command({'name':'DP-test'},cfg,{'DP-test'},{'vendor':'amd','codecs':['h264']})
+        self.assertEqual(args[args.index('-bm')+1],'qp');self.assertEqual(args[args.index('-q')+1],'high')
+        cfg['capture_quality']='custom';cfg['bitrate']=51000
+        args,_=capture_command({'name':'DP-test'},cfg,{'DP-test'},{'vendor':'amd','codecs':['h264']})
+        self.assertEqual(args[args.index('-bm')+1],'cbr');self.assertEqual(args[args.index('-q')+1],'51000')
+    def test_exact_hdr_codecs_are_preserved_and_auto_skips_codec_check(self):
+        for codec in ('hevc_10bit','hevc_hdr','av1_10bit','av1_hdr'):
+            with self.subTest(codec=codec):
+                cfg=profile('amd');cfg['capture_codec']=codec
+                args,_=capture_command({'name':'DP-test'},cfg,{'DP-test'},{'vendor':'amd','codecs':[codec]})
+                self.assertEqual(args[args.index('-k')+1],codec)
+        cfg=profile('amd');cfg['capture_codec']='auto'
+        args,_=capture_command({'name':'DP-test'},cfg,{'DP-test'},{'vendor':'amd','codecs':[]})
+        self.assertEqual(args[args.index('-k')+1],'auto')
+    def test_unadvertised_hdr_codec_is_rejected_without_downgrade(self):
+        cfg=profile('amd');cfg['capture_codec']='hevc_hdr'
+        with self.assertRaisesRegex(RuntimeError,'does not advertise hevc_hdr'):
+            capture_command({'name':'DP-test'},cfg,{'DP-test'},{'vendor':'amd','codecs':['hevc']})

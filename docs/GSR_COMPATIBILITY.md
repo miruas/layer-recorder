@@ -1,60 +1,57 @@
 # GSR compatibility and remaining gaps
 
-This matrix describes Layer 0.7's GSR-only capture architecture against the **pinned GSR 6.1.7** source, commit `1d4946a16139b446e6308f741e9ba99f2ed5b3a7`. It is not a claim that every upstream feature has been exposed or physically tested. See [UPSTREAM.md](../UPSTREAM.md) for provenance and [Testing](TESTING.md) for validation boundaries.
+This describes the Layer 0.8 source against the pinned **GSR 6.1.7** fork, upstream commit `1d4946a16139b446e6308f741e9ba99f2ed5b3a7`. It distinguishes implemented integration from physical validation. See [provenance](../UPSTREAM.md), [desktop providers](desktop-providers.md), [portability audit](PORTABILITY_AUDIT.md) and [testing](TESTING.md).
 
-## Capture and platform compatibility
+## Capture sources and platforms
 
-| GSR feature | Layer integration | Limits / evidence |
+| GSR feature | Layer integration | Boundary |
 | --- | --- | --- |
-| NVIDIA, AMD, Intel on Wayland and X11 | Vendor/advertised-codec validation; GSR captures every selected video source | Physical migration validation uses NVIDIA. AMD/Intel command paths are tested; the new Rust/GSR-only path still needs physical AMD/Intel verification. [GSR README](../upstream/gpu-screen-recorder/README.md), [planner](../katman/hardware.py). |
-| Direct monitor capture / KMS | One GSR process per monitor; independent editable tracks | Requires compatible system KMS broker and drivers. [platform discovery](../katman/platform_capture.py), [Rust capture](../native/recorder/src/capture.rs). |
-| X11 monitor capture | GSR inventory replaces mandatory Hyprland inventory | X11 hardware/session testing remains open. |
-| Portal / session restoration | Explicit `capture_targets: ["portal"]`; GSR presents its permission dialog | No automatic consent or invisible fallback. Portal-selected dimensions are read from saved media. Multiple portal selections are not claimed as separate Layer monitor tracks. Portal restore permissions remain controlled by the desktop. |
-| X11 window ID / focused window | Explicit numeric target or `focused` passed to GSR | Source-level integration; not physically verified. No window picker yet. GSR focused capture has upstream sizing requirements. |
-| Camera / V4L2 | Explicit `/dev/video…` target passed to GSR | Source-level integration; not physically verified. GSR camera exclusivity and format constraints apply; no camera picker/settings UI. |
-| Multi-source native GSR composition | Layer deliberately preserves independent producers instead | Flattened native GSR composition is not selectable as a Layer capture mode. Composition happens in the editor. |
-| Monitor positions, rotation, scale | Optional Hyprland geometry enrichment | Without it, placement is **synthetic side-by-side**, marked `layout_provider: synthetic`; GSR's monitor list supplies dimensions, not logical desktop placement. |
-| Virtual Wayland monitors | Explicit portal path when available | A virtual output absent from GSR's direct inventory cannot be captured by its direct path. The wf-recorder fallback has been removed. |
-| Display hotplug | Initial inventory only | Automatic video-source hotplug remains missing. Audio-source discovery is dynamic. |
-| Arbitrary GPU selection / cross-GPU encoding | Not promised | GSR captures/encodes with the display GPU; Layer's vendor profile validates this constraint. |
+| NVIDIA, AMD and Intel; X11 and Wayland | GSR owns capture and advertised-codec discovery. CPU capture fallback is disabled. | Hardware/driver restrictions are inherited from GSR. A compiled encoder is not proof that a particular GPU supports it. |
+| Direct monitors / KMS | An independent GSR video producer per selected monitor. | Requires matching KMS helpers and host permissions. Flatpak direct capture uses the system-install host-helper paths. |
+| X11 monitors | GSR source inventory, optional XRandR geometry. | Actual hardware capture coverage is narrower than the implemented X11 path. |
+| Portal | Explicit `capture_targets: ["portal"]`; GSR handles consent and session restoration. | No invisible fallback or consent bypass. Multiple portal selections are not represented as independent Layer monitor tracks. Saved media supplies final dimensions. |
+| X11 window ID / focused window | Numeric IDs and `focused` pass through as explicit targets. | No window picker. Upstream focused-capture sizing restrictions apply. Not physically validated in this release cycle. |
+| Camera / V4L2 | Explicit `/dev/video…` targets pass through to GSR. | No camera picker or camera-format UI; upstream device constraints apply. Not physically validated. |
+| Native multi-source composition | Layer preserves independent producers and composes afterward. | Flattened native GSR composition is not a Layer capture mode. |
+| Monitor layout | Optional Hyprland, Sway and X11/XRandR adapters enrich GSR-matching outputs. | Other sessions use an explicit synthetic horizontal layout. Layout enrichment never determines whether GSR can capture an output. |
+| Virtual outputs | Available only through a GSR-supported direct inventory or explicit portal source. | No wf-recorder fallback. |
+| Display hotplug | Inventory at capture start. | Automatic video-source hotplug is not implemented. |
+| Arbitrary capture GPU selection | GSR selects the capture/display GPU; profiles validate it. | Cross-GPU capture/encode selection is not promised. Export-device selection is a separate operation. |
 
-The relevant upstream CLI formats and restrictions are in the [GSR manual](../upstream/gpu-screen-recorder/gpu-screen-recorder.1). Capture targets are advanced configuration; unsupported GSR sources fail visibly instead of switching engines or CPU encoding.
+The upstream [manual](../upstream/gpu-screen-recorder/gpu-screen-recorder.1) remains authoritative for source and driver restrictions. Advanced capture targets are configured in Layer's JSON settings; the normal GSR source/region selection does not restrict Layer's independent-display capture.
 
-## Codec, color and timing features
+## Codec, color and timing
 
-| GSR feature | Layer status |
+| Feature | Layer status |
 | --- | --- |
-| H.264, HEVC, AV1 | Exposed; advertised hardware support checked; CPU capture fallback disabled. |
-| VP8, VP9 | Not exposed in Layer settings/planning. |
-| HEVC/AV1 HDR and 10-bit | Not exposed. The editor/export pipeline also needs explicit color-management work before HDR can be promised. GSR itself excludes HDR on X11/portal. |
-| Experimental Vulkan encoding | Not exposed; upstream marks it experimental. |
-| QP/VBR/CBR, quality presets, keyframe interval | Layer currently fixes CBR, configured bitrate and a one-second keyframe interval for editable segmented replay. |
-| CFR/VFR/content frame mode, cursor, tune, yuv444, color range | Mostly upstream defaults; not independently exposed. |
-| Opus, AAC, MP3 audio | Layer's GSR audio capture requests **Opus 256 kbps** in segmented Matroska. Metadata records the probed codec. Audio is now lossy Opus; the old external-FFmpeg FLAC producer was removed. |
-| FLAC | Pinned GSR disables FLAC; Layer does not claim lossless capture in this path. |
+| H.264, HEVC and AV1 | Exposed; explicit codecs must appear in GSR's advertised list. `auto` passes through to GSR. |
+| HEVC/AV1 10-bit and HDR | Exact GSR codec names are retained in shared preferences and passed through when advertised. This does **not** establish HDR-aware editor preview/export or color-management parity. GSR source/session restrictions still apply. |
+| VP8 / VP9 | Not exposed in Layer settings. |
+| Quality presets / CBR | Shared GSR `medium`, `high`, `very_high`, `ultra` use QP; `custom` uses the configured CBR bitrate. Capture keyframe interval is one second for segmented replay. |
+| Experimental Vulkan encoding, tune, yuv444, frame mode and color range | Not independently exposed; Layer is not a complete wrapper for every GSR CLI switch. |
+| Independent audio | GSR Opus at 256 kbps in segmented Matroska. Metadata records the probed codec. |
+| AAC / MP3 / lossless FLAC capture | Not selectable Layer capture formats. Pinned GSR disables FLAC. Editor audio export is separate. |
 
-Fork additions: exact `app:layer-node:<PipeWire-id>` selectors keep application roles separate without capturing every stream of an application; audio-only first-packet sidecars provide timing; segmented Matroska uses its inner-container codec compatibility so Opus is not silently replaced with AAC. See [PipeWire implementation](../upstream/gpu-screen-recorder/src/pipewire_audio.c), [recorder](../upstream/gpu-screen-recorder/src/recorder/recorder.c) and [Rust audio discovery](../native/recorder/src/audio.rs). An unmodified system GSR lacks these extensions and is rejected by this independent-track engine.
+The fork adds exact `app:layer-node:<PipeWire-id>` selectors, first-packet timestamp sidecars and segmented-Matroska codec compatibility. Its `--info` reports the Layer node-selector extension and whether the FFmpeg segment muxer was compiled. The independent-track engine requires these extensions; stock GSR is not a drop-in replacement. See [command planning](../katman/hardware.py), [platform bridge](../katman/native_platform.py), [audio selectors](../upstream/gpu-screen-recorder/src/pipewire_audio.c) and [Rust capture](../native/recorder/src/capture.rs).
 
-## Replay, audio and control
+## Audio, replay and control
 
-| GSR feature | Layer status / deliberate boundary |
+| Feature | Layer integration / boundary |
 | --- | --- |
-| Independent device/application audio | GSR is the producer for microphones and each application/role group. Voice and media stay separate when PipeWire exposes separate streams. Changes retire the old generation and start a new one; original captured media is retained. |
-| Default devices, inverse-app capture and mixed input selectors | Upstream features, not selectable Layer source policies. Layer discovers all application roles and microphones. |
-| Native RAM/disk replay, reset-on-save | Layer uses its own Rust-managed segmented RAM ring to retain independently editable sources. Replay has no disk fallback; ordinary recordings spool older closed segments to disk. |
-| Native audio-only replay | **Upstream does not support it.** Layer's GSR audio-only producers feed the Rust ring rather than using GSR `-r`. |
-| Normal recording plus replay | Shared encoded segments; disabling either does not stop the other. |
-| Native GSR socket / pause / variable saves | GSR has these APIs; Layer currently supervises producers with signals and exposes its own compatible JSON socket. Direct native-GSR IPC and capture pause remain missing. |
-| Alt+Z overlay and original GSR shortcuts | Existing patched GSR UI bridge remains; normal/replay actions mirror to Layer, with separate original GSR and independent-track outputs. |
-| Region capture, screenshots, live streaming / WHIP | Upstream features not exposed as Layer capture actions. Editor crop and PNG export are separate features. |
+| PipeWire application roles | With GSR application-audio support and `pw-dump`, a persistent graph monitor discovers application/role groups and microphones. Voice and media remain separate only when the application exposes separate streams. Changed nodes start a new generation without erasing earlier media. |
+| PulseAudio device fallback | Without application-node support, GSR enumerated output monitors and microphones become separate device tracks. Application/role separation is unavailable and a warning is recorded. Device inventory is static until capture restarts. |
+| No available audio device | Display capture remains available with an explicit warning. |
+| Mixed/default/inverse application selectors | Upstream capabilities, not exposed as Layer discovery policies. Concrete device names are preferred over duplicate default aliases. |
+| RAM replay | Rust owns a bounded segmented tmpfs ring for independent tracks. No silent disk fallback. Upstream GSR native replay is not reused. |
+| Ordinary recording plus replay | Encoded segments are shared; stopping one mode does not stop the other. Older ordinary-recording segments spool to disk. |
+| Audio-only replay | GSR audio-only producers feed Layer's ring. This does not add upstream native `-r` support for audio-only capture. |
+| Configurable saves | Buffer and short/long save durations follow the shared GSR preferences. Defaults are 300/60/300 seconds; CLI names `save-1`/`save-5` remain compatibility names. |
+| Original Alt+Z and GSR shortcuts | The patched GSR UI retains normal keys and mirrors record/replay/save actions to Layer. Its normal shortcut settings also expose opening Layer. |
+| Pause / native GSR socket | Layer supervises producers and exposes its own JSON socket. Capture pause and direct reuse of the native GSR IPC/buffer are not implemented. |
+| Streaming / WHIP, screenshots, region capture | Not exposed as Layer capture actions. Edited-frame PNG and editor crop are separate. |
 
-## Hyprland separation
+## Desktop boundary and validation
 
-The Rust capture, RAM storage, segment retention, project saving and local control protocol do not call `hyprctl`. [The metadata bridge](../katman/native_platform.py) keeps Python configuration and optional desktop integration outside that core:
+Capture, RAM retention, snapshots and control do not depend on Hyprland. Optional adapters provide application identity and geometry on Hyprland, Sway and EWMH/X11. Native GNOME/KWin Wayland use `Desktop` naming and synthetic placement rather than private title scraping or shell extensions. The GSR overlay owns its own cross-desktop shortcut machinery; Layer's additional binding watcher is Hyprland-only. Other desktops can bind the CLI through their normal shortcut tools. Layer does not yet implement a separate GlobalShortcuts portal client.
 
-- GSR is the authoritative capture inventory. Hyprland may enrich geometry.
-- Focus naming uses Hyprland only when that session is present. Other sessions save under **Desktop**, avoiding a stale application name from an earlier Hyprland session. A compositor-neutral active-application provider is still missing.
-- Layer global-shortcut editing currently registers keys only on Hyprland. Other desktops can bind `layer record`, `layer replay`, `layer save-1`, `layer save-5`, and `layer ui` with their own shortcut tools; the GSR overlay keys remain its responsibility. Portal global-shortcut support is not yet implemented.
-- Service startup uses the desktop's standard graphical user-session target; it does not depend on a particular GSR service name.
-
-Physical checks on the development machine exercised direct GSR HEVC video and separate GSR Opus application/microphone recordings with `HYPRLAND_INSTANCE_SIGNATURE` absent. That demonstrates removal of the **mandatory Hyprland API**, not certification of KDE, GNOME or X11 sessions. Those desktops, portal consent, camera capture and physical AMD/Intel runs remain explicit validation gaps.
+Physical development checks exercised NVIDIA HEVC video and three independent Opus audio tracks, ordinary recording and RAM replay with the mandatory Hyprland API absent. Debian 13 Xfce/X11 and Weston, and openSUSE Leap 16 Xfce/X11 and nested KWin Wayland, exercised packaged UI startup. These VM checks used software rendering and do not prove KMS, portal consent, hardware encoding or all editor operations. The packaged full FFmpeg CLI also completed synthetic HEVC exports on physical NVIDIA NVENC and AMD VA-API devices. This is an export test, not desktop capture. Physical AMD/Intel capture, Intel export, GNOME/Mutter, portal, camera and focused-window validation remain open. No claim of every distribution or desktop being certified is made.

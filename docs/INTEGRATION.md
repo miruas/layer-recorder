@@ -1,44 +1,50 @@
 # Desktop and GPU Screen Recorder integration
 
-## Standalone shortcuts
+## Shared settings and shortcuts
 
-The installer does not rewrite your compositor configuration. [examples/hyprland.conf](../examples/hyprland.conf) contains suggested bindings. Include it from your own Hyprland configuration, adapting the path to your checkout. Restart/reload the compositor configuration through its normal workflow.
+The bundled, patched GSR UI retains the normal Alt+Z menu and its recording/replay shortcuts. Its regular settings expose the Layer editor shortcut (default Super+Alt+Z), replay buffer, and configurable short/long save durations. Defaults are 60 and 300 seconds; these are preferences rather than fixed command semantics.
 
-Suggested actions:
+Layer's Recording preferences opens the normal GSR replay/settings page. The shared GSR `config_ui` is the default capture source for codec, quality, FPS, bitrate and replay lengths; Layer reads it without rewriting unrelated options. Library and export preferences stay separate. Exact `auto`, HEVC/AV1 10-bit and HDR codec names are retained, subject to hardware support and the editor's documented color-management limits.
 
-| Shortcut | Action |
+An explicit `LAYER_GSR_CONFIG` selects a file; Layer's advanced `gsr_config` can also select its reader's source. Otherwise the canonical reader prefers an existing native XDG GSR file, then an existing original GSR Flatpak file. The Layer Flatpak launcher selects a shared existing file for both components. See [Configuration](CONFIGURATION.md) and [Flatpak](FLATPAK.md). Capture-format changes take effect on the next capture/reload; an active ordinary recording must be saved/stopped first.
+
+## Mirrored normal GSR actions
+
+The patched GSR normal-record, replay-enable and replay-save handlers invoke the detached Layer bridge. Mirroring uses explicit states rather than toggles, preventing repeated overlay messages from accidentally reversing capture. The shared short/long durations determine save lengths.
+
+GSR's ordinary output and Layer's independent-track output are separate capture sessions. Mirroring retains the usual GSR recording while also creating an editable Layer project, with additional encoder/memory use. Layer does not reuse the internal GSR replay buffer. GSR pause, streaming and screenshot actions do not gain Layer equivalents. A GSR region/window choice does not limit Layer's separate display inventory.
+
+Successful Layer saves are silent. The bridge uses application identity instead of private window titles. GSR's own notifications remain controlled by its preferences.
+
+## Portable standalone bindings
+
+Any desktop can bind these commands through its normal shortcut tool:
+
+| Command | Action |
 | --- | --- |
-| Super+Alt+Z | Open Layer |
-| Super+Alt+F7 | Save last minute |
-| Super+Alt+F8 | Save last five minutes |
-| Super+Alt+F9 | Start/stop normal recording |
-| Super+Alt+F10 | Enable/disable replay |
+| `layer ui` | Open the single archive/editor window |
+| `layer record` | Toggle ordinary recording |
+| `layer replay` | Toggle replay |
+| `layer save-1` | Save configured short duration |
+| `layer save-5` | Save configured long duration |
 
-Use your compositor's binding syntax if it differs. A key used elsewhere should be reassigned deliberately; Layer does not remove existing bindings.
+Layer's additional shortcut watcher manages owned bindings only on Hyprland. Sway/X11/other desktops can use external bindings; this is separate from GSR's own global shortcut implementation. Layer has no independent GlobalShortcuts portal client. The installer does not rewrite compositor configuration; [the Hyprland example](../examples/hyprland.conf) is optional. Resolve key conflicts through the owning desktop/GSR settings.
 
-## Optional Alt+Z menu
+## Login startup
 
-Build the pinned GSR UI source plus the provided patch, then install the service override. The added Layer menu can open the library, toggle capture/replay and save either replay length. The original packaged executable remains intact.
+The source installer supports a systemd user service and an XDG autostart entry:
 
-The patch launches the portable `layer` command through PATH, never a developer's absolute path. The generated service environment includes the local launcher directory.
+```sh
+python3 install.py --enable
+```
 
-## Mirrored GSR actions
+`layer autostart` ensures the capture service is available and falls back to a detached daemon if no usable user service manager exists. It does not open the editor. The desktop session must provide the relevant display/audio environment. `auto_replay` enables standalone replay at service startup; GSR replay autostart can also mirror replay-on. Save actions need an active ring, and a partly filled ring saves only available footage.
 
-GSR's configured normal-record, replay-enable, full-buffer-save and one-minute-save handlers also invoke the Layer bridge. The bridge uses explicit on/off states rather than toggles, so overlay refreshes and duplicate state messages cannot accidentally reverse capture. It runs outside the overlay event loop.
+The optional GSR service override has Wants/After for `katman.service`. It uses the actual GSR user service selected during installation; the default source-installer name is `gsr-ui.service`. No installation forcibly restarts active GSR capture. Save/stop it before activating a newly built overlay.
 
-GSR and Layer are separate capture sessions. Mirroring creates the usual GSR recording and an editable Layer project; it uses additional encoder/memory resources. Layer does not reuse GSR's internal buffer. GSR streaming, pause and screenshots have no Layer equivalent. GSR's selected region/window does not restrict Layer's independent display capture.
+## Native packaged overlay
 
-The patch also bounds optional application-name helper lookups and avoids naming by private window titles. Successful Layer saves are silent. GSR's own notification preferences remain under GSR's control; this installer does not overwrite them.
-
-## Startup
-
-The optional GSR service override has Wants/After for `katman.service`; GSR replay autostart mirrors replay-on. Standalone users can enable `katman.service` and `auto_replay` instead. Save actions work only after replay has started. Before the ring fills, only the available footage can be saved.
-
-To activate a newly built overlay, save/stop existing GSR capture before restarting its service. Neither build nor installation forcibly restarts it.
-
-## Packaged overlay
-
-The ready-to-install package provides `/usr/lib/layer-recorder/overlay/bin/gsr-ui`. After saving/stopping GSR capture, add an override to your existing **user** GSR service (`systemctl --user edit YOUR-GSR.service`):
+A native package places the patched overlay at `/usr/lib/layer-recorder/overlay/bin/gsr-ui`. To use it with an existing user GSR service, add an override to that real service after saving/stopping capture:
 
 ```ini
 [Unit]
@@ -50,6 +56,18 @@ ExecStart=
 ExecStart=/usr/lib/layer-recorder/overlay/bin/gsr-ui launch-daemon
 ```
 
-Then reload the user service manager and restart that GSR service. Keep `/usr/bin` on its PATH so the bridge can find `layer`. This does not replace the system overlay binary. Remove the override to return to the distribution overlay. Use your real service name; the package never guesses it or restarts active captures.
+Keep the installed `layer` command on PATH. Reload the user service manager and restart the selected GSR service through the normal desktop workflow. Remove the override to return to the distribution overlay. Layer does not replace the system GSR binary.
 
-Layer Settings → GSR Integration edits shared shortcuts and optionally synchronizes codec/replay length. Backups stay private under the user state directory. The bundled overlay's `reload-config` rebinds shortcuts immediately; capture encoding changes apply on the next recording/replay start.
+## Flatpak overlay
+
+Use the bundled overlay rather than a stock GSR UI that lacks the Layer bridge:
+
+```sh
+flatpak run io.github.miruas.Layer overlay
+```
+
+Host KMS/global helper paths use a system Flatpak installation; a user-only editor installation does not provide those host paths. Desktop authorization and drivers remain host responsibilities. See [Flatpak installation](FLATPAK.md) for permissions and portal alternatives.
+
+## Desktop metadata
+
+GSR owns source inventory on every session. Hyprland, Sway and EWMH/X11 adapters optionally supply geometry and application classes. Native GNOME/KWin Wayland fall back to `Desktop` naming and synthetic placement rather than installing shell extensions or reading window titles. This limits metadata convenience, not GSR capture availability. See [Desktop providers](desktop-providers.md) for exact detection and fallback rules.

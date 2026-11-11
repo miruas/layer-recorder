@@ -1,0 +1,18 @@
+[package]
+name = "layer-studio"
+version = "0.8.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Layer native desktop archive and independent-source video editor"
+[dependencies]
+anyhow = "1"
+serde_json = "1"
+libc = "0.2"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
+eframe = { version = "=0.33.3", default-features = false, features = ["glow", "x11", "wayland", "default_fonts", "accesskit"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -60,37 +60,28 @@ def validate_effects(section, source_ids):
             raise ValueError('Drawing points must stay inside the frame.')
 
 
-def draw_annotations(painter, rect, annotations):
-    from PySide6.QtCore import Qt, QPointF, QRectF
-    from PySide6.QtGui import QColor, QPen, QPainterPath, QPainter
-    painter.save();painter.setClipRect(rect);painter.setRenderHint(QPainter.Antialiasing)
-    for stroke in annotations:
-        points=[QPointF(rect.x()+x*rect.width(),rect.y()+y*rect.height()) for x,y in stroke['points']]
-        if not points:continue
-        tool=stroke['tool'];a,b=points[0],points[-1]
-        painter.setBrush(Qt.NoBrush);painter.setPen(QPen(QColor(stroke.get('color','#ff4c4c')),max(1,stroke.get('width',.004)*rect.height()),Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin))
-        if tool=='redact':
-            painter.fillRect(QRectF(a,b).normalized(),QColor('#000000'));continue
-        if tool=='rectangle':painter.drawRect(QRectF(a,b).normalized())
-        elif tool in ('line','arrow'):
-            painter.drawLine(a,b)
-            if tool=='arrow':
-                angle=math.atan2(b.y()-a.y(),b.x()-a.x());length=max(10,stroke.get('width',.004)*rect.height()*4)
-                for offset in (-.5,.5):painter.drawLine(b,QPointF(b.x()-length*math.cos(angle+offset),b.y()-length*math.sin(angle+offset)))
-        else:
-            path=QPainterPath(a)
-            for point in points[1:]:path.lineTo(point)
-            if len(points)==1:painter.drawPoint(a)
-            else:painter.drawPath(path)
-    painter.restore()
-
-
 def annotation_image(section, size, destination):
-    from PySide6.QtCore import Qt, QRectF
-    from PySide6.QtGui import QImage, QPainter
-    w,h=size;image=QImage(w,h,QImage.Format_ARGB32_Premultiplied);image.fill(Qt.transparent)
-    painter=QPainter(image);draw_annotations(painter,QRectF(0,0,w,h),section.get('annotations',[]));painter.end()
-    if not image.save(str(destination)):raise RuntimeError('Could not render the drawing overlay.')
+    # Headless rendering: no Qt runtime is loaded by the Rust editor's jobs.
+    from PIL import Image,ImageDraw
+    w,h=map(int,size);factor=2
+    image=Image.new('RGBA',(w*factor,h*factor),(0,0,0,0));draw=ImageDraw.Draw(image)
+    for stroke in section.get('annotations',[]):
+        points=[(round(x*w*factor),round(y*h*factor)) for x,y in stroke.get('points',[])]
+        if not points:continue
+        a,b=points[0],points[-1];tool=stroke['tool'];color=stroke.get('color','#ff4c4c');width=max(1,round(stroke.get('width',.004)*h*factor))
+        bounds=(min(a[0],b[0]),min(a[1],b[1]),max(a[0],b[0]),max(a[1],b[1]))
+        if tool=='redact':draw.rectangle(bounds,fill='#000000')
+        elif tool=='rectangle':draw.rectangle(bounds,outline=color,width=width)
+        elif tool in ('line','arrow'):
+            draw.line([a,b],fill=color,width=width)
+            if tool=='arrow':
+                angle=math.atan2(b[1]-a[1],b[0]-a[0]);length=max(10*factor,width*4)
+                for offset in (-.5,.5):draw.line([b,(b[0]-length*math.cos(angle+offset),b[1]-length*math.sin(angle+offset))],fill=color,width=width)
+        else:
+            if len(points)>1:draw.line(points,fill=color,width=width,joint='curve')
+            radius=width/2
+            for x,y in (points if len(points)==1 else (points[0],points[-1])):draw.ellipse((x-radius,y-radius,x+radius,y+radius),fill=color)
+    image.resize((w,h),Image.Resampling.LANCZOS).save(destination,'PNG')
 
 
 def join_next(project, index):

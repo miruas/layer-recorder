@@ -26,7 +26,7 @@ def ensure_daemon():
     if not managed:
         log = open(CACHE / "service.log", "ab")
         env = os.environ.copy()
-        env["PYTHONPATH"] = str(APP)
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(APP), env.get("PYTHONPATH", "")]))
         subprocess.Popen([sys.executable, "-m", "katman.daemon"], cwd=APP, env=env,
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
         log.close()
@@ -43,7 +43,7 @@ def ensure_daemon():
 def main():
     parser = argparse.ArgumentParser(prog="layer",description="Layer multi-source recorder and editor")
     parser.add_argument("command", nargs="?", default="ui",
-                        choices=["ui", "status", "record", "replay", "save-1", "save-5", "shutdown", "export", "bridge", "app-name", "doctor", "config"])
+                        choices=["ui", "download-model", "overlay", "autostart", "status", "record", "replay", "save-1", "save-5", "shutdown", "export", "bridge", "app-name", "doctor", "config"])
     parser.add_argument("path", nargs="?")
     parser.add_argument("--output")
     parser.add_argument("--profile",choices=["auto","nvidia","amd","intel"],default="auto")
@@ -70,6 +70,21 @@ def main():
         from .identity import focused_application
         print(focused_application(args.path))
         return
+    if args.command == "download-model":
+        script = APP / 'tools/download-model.py'
+        if not script.is_file():parser.error('The model downloader is missing from this installation.')
+        command = [sys.executable, str(script)]
+        if args.output:command += ['--output', args.output]
+        os.execv(sys.executable, command)
+    if args.command == "overlay":
+        binary = APP / 'overlay/bin/gsr-ui'
+        if not binary.is_file():
+            parser.error('The bundled GPU Screen Recorder overlay is missing.')
+        try:
+            ensure_daemon()
+        except (OSError, RuntimeError) as error:
+            print('Layer capture service: ' + str(error), file=sys.stderr)
+        os.execv(str(binary), [str(binary), 'launch-daemon'])
     if args.command == "ui":
         from .ui import main as ui_main
         ui_main(args.path)
@@ -84,6 +99,9 @@ def main():
             if not args.path or not args.output:
                 parser.error("export requires a project path and --output")
             print(export_project(args.path, args.output))
+            return
+        if args.command == "autostart":
+            ensure_daemon()
             return
         ensure_daemon()
         mapping = {"record": "toggle-record", "replay": "toggle-replay", "save-1": "save-replay",

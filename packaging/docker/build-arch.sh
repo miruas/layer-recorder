@@ -15,9 +15,10 @@ cd /build/src
 export CARGO_HOME=/build/cargo
 python3 tools/build-native.py gpu-screen-recorder --reuse
 python3 tools/build-native.py recorder
+python3 tools/build-native.py editor
 python3 tools/build-native.py gsr-ui --reuse --prefix /usr/lib/layer-recorder/overlay --destdir /build/overlay
 python3 tools/build-native.py whisper --reuse
-QT_QPA_PLATFORM=offscreen python3 tools/smoke-ui.py
+xvfb-run -a python3 tools/smoke-ui.py
 LAYER_RELEASE_CONTAINER=1 python3 tools/build-release.py --overlay-prefix /build/overlay --speech-binary speech/whisper-cli
 cp dist/*.pkg.tar.zst dist/*-corresponding-sources.tar.gz dist/*-SHA256SUMS /out/
 '

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.miruas.Layer</id>
+  <name>Layer</name>
+  <summary>Record independent screens and sounds, then edit what remains</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <launchable type="desktop-id">io.github.miruas.Layer.desktop</launchable>
+  <developer id="io.github.miruas"><name>Layer contributors</name></developer>
+  <description>
+    <p>Layer is a GPU Screen Recorder source fork with independent display and audio tracks, a RAM replay buffer, and a native recording library and editor.</p>
+    <p>Choose which screens and sounds remain after recording. Trim and arrange clips, annotate the video, and apply privacy masks before exporting.</p>
+    <p>Hardware capture depends on the GPU driver, the selected GSR capture path, and desktop permissions. No speech model or personal configuration is included.</p>
+  </description>
+  <url type="homepage">https://github.com/miruas/layer-recorder</url>
+  <url type="bugtracker">https://github.com/miruas/layer-recorder/issues</url>
+  <url type="vcs-browser">https://github.com/miruas/layer-recorder</url>
+  <provides><mediatype>application/x-katman-project</mediatype></provides>
+  <content_rating type="oars-1.1"/>
+</component>

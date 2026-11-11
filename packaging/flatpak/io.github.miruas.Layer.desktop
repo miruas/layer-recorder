@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Layer
+Comment=Independent-source recording and video editing
+Exec=layer ui %f
+Icon=io.github.miruas.Layer
+Terminal=false
+Categories=AudioVideo;Recorder;Video;
+MimeType=application/x-katman-project;
+StartupWMClass=layer-recorder

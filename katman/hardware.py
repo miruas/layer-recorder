@@ -44,18 +44,24 @@ def gsr_info(program='gpu-screen-recorder'):
         if line.startswith('section='):section=line.split('=',1)[1]
         elif section=='system_info' and '|' in line:
             key,value=line.split('|',1)
-            if key in ('gsr_version','fork_name','fork_version','upstream_revision','layer_audio_node_selector','display_server','supports_app_audio'):result[key]=value
+            if key in ('gsr_version','fork_name','fork_version','upstream_revision','layer_audio_node_selector','layer_segment_muxer','display_server','supports_app_audio'):result[key]=value
         elif section=='gpu_info' and line.startswith('vendor|'):result['vendor']=line.split('|',1)[1]
         elif section=='video_codecs':result['codecs'].append(line.strip())
     return result
 
 
 def capture_command(display,config,direct,info,helper=None,inventory=None):
-    vendor=config['gpu_vendor'];codec=config['capture_codec'];target=display['name']
+    vendor=config['gpu_vendor'];codec=config.get('capture_codec','h264');target=display['name']
     if vendor!='auto' and vendor!=info.get('vendor'):raise RuntimeError('GSR captures with the display GPU. The requested GPU profile does not match its advertised GPU.')
     if target not in direct:raise RuntimeError('This output is unavailable to GSR. Choose an explicit GSR portal source; automatic wf-recorder fallback was removed.')
-    if codec not in info.get('codecs',[]):raise RuntimeError('The capture GPU does not advertise '+codec+' encoding.')
-    command=[gsr_program(config),'-w',target,'-f',str(config['fps']),'-encoder','gpu','-fallback-cpu-encoding','no','-k',codec,'-bm','cbr','-q',str(config['bitrate']),'-keyint','1','-c','segment','-ffmpeg-opts','segment_time=2;segment_format=matroska;segment_list={list};reset_timestamps=1;segment_format_options=cluster_time_limit=250:flush_packets=1','-write-first-frame-ts','yes','-o','{output}','-v','no']
+    if codec!='auto' and codec not in info.get('codecs',[]):raise RuntimeError('The capture GPU does not advertise '+codec+' encoding.')
+    quality=config.get('capture_quality','custom')
+    if quality=='custom':
+        rate=['-bm','cbr','-q',str(config['bitrate'])]
+    elif quality in ('medium','high','very_high','ultra'):
+        rate=['-bm','qp','-q',quality]
+    else:raise ValueError('capture_quality must be custom, medium, high, very_high or ultra.')
+    command=[gsr_program(config),'-w',target,'-f',str(config['fps']),'-encoder','gpu','-fallback-cpu-encoding','no','-k',codec,*rate,'-keyint','1','-c','segment','-ffmpeg-opts','segment_time=2;segment_format=matroska;segment_list={list};reset_timestamps=1;segment_format_options=cluster_time_limit=250:flush_packets=1','-write-first-frame-ts','yes','-o','{output}','-v','no']
     if target=='portal':command+=['-restore-portal-session','yes']
     return command,'GPU Screen Recorder'
 

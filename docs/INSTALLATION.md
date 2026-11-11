@@ -1,5 +1,7 @@
 # Installation
 
+For Linux distributions beyond Arch/CachyOS, use the [portable Flatpak build/install path](FLATPAK.md). The native package instructions below also document the published 0.7 release. The 0.8 source tree uses a Rust GUI and no Qt runtime.
+
 ## Supported environment
 
 Layer capture requires Linux, GSR-supported capture sources, PipeWire with its PulseAudio compatibility service and a supported hardware encoder. Hyprland enriches geometry, focus naming and global shortcuts but is not required by the capture core. [Compatibility and unverified sessions](GSR_COMPATIBILITY.md). The native editor and ordinary CPU exports do not require a capture GPU or a running compositor.
@@ -32,7 +34,7 @@ If migrating from a source installation, save/stop active captures, disable its 
 Install packages using your normal package manager. A typical runtime/editor set is:
 
 ```sh
-sudo pacman -S --needed python python-pip pyside6 qt6-multimedia qt6-svg qt6-wayland python-numpy python-opencv \
+sudo pacman -S --needed python python-pip python-pillow python-numpy python-opencv \
   ffmpeg pipewire libpulse fontconfig noto-fonts libnotify
 ```
 
@@ -59,6 +61,7 @@ python3 -m venv .venv
 python -m pip install -e . meson ninja
 python tools/build-native.py gpu-screen-recorder
 python tools/build-native.py recorder
+python tools/build-native.py editor
 python install.py --profile auto --enable
 ```
 
