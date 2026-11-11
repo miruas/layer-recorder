@@ -49,7 +49,7 @@ A separate isolated live run verified actual NVIDIA GSR HEVC display capture and
 
 The 2026-11-12 candidate uses one native Rust archive/editor and a headless media
 worker. The local suite completed 149 Python tests with three opt-in hardware
-checks skipped, plus 29 editor and 10 recorder Rust tests. A separate hardware
+checks skipped, plus 30 editor and 10 recorder Rust tests. A separate hardware
 smoke check exercised HEVC export with the packaged FFmpeg on NVIDIA NVENC and
 AMD VA-API. This does not certify Intel encoding or AMD/Intel desktop capture.
 
@@ -64,8 +64,7 @@ The backend suite covers ordinary recording/replay with synthetic pixels,
 independent sources, worker previews, captions, stabilization, overlays, batch
 exports, waveforms and tracking. GUI checks cover wide and 950-pixel layouts,
 voiceover/export/settings dialogs and clean automatic closure. Startup checks
-inject a three-second font lookup and a blocked project read; all twelve cases
-completed in 0.766–0.916 seconds. These guests use software rendering, not GPU
+inject a three-second font lookup and a blocked project read; the slow-font cases render and close before that three-second lookup completes. These guests use software rendering, not GPU
 passthrough. They do not validate portal consent, privileged KMS/global-input
 helpers, GNOME/Mutter or physical Intel hardware. Native NVIDIA UI-driver stalls
 are not ruled out by VM startup results.
@@ -83,4 +82,4 @@ fixtures are omitted with original hashes and modified Cargo file checksums;
 unknown compiled inputs block source packaging. Release archives must be rebuilt
 from the clean commit used by the matching binary.
 
-Additional Rust regressions exercise blocked FIFO autosave, retained failed snapshots, imported-source metadata barriers and cancellation before a gated media process starts.
+Additional Rust regressions exercise blocked FIFO autosave, 1,000 coalesced submissions with one retained pending model per document, retained failed snapshots, imported-source metadata barriers and cancellation before a gated media process starts.

@@ -50,6 +50,16 @@ restore and supported buffer formats depend on GSR and the desktop portal.
 User installation alone does not provide the system host-helper path for direct
 KMS or global device shortcuts.
 
+## Switching from an existing native installation
+
+Layer installations share the capture control socket. Finish an ordinary recording
+and stop the older Layer capture service before testing another installed version;
+otherwise the new editor may control the existing daemon. Keep one capture
+autostart entry active. Existing recording folders remain intact, while the
+Flatpak has its own application configuration directory and uses the shared GSR
+preferences described below. Personal local themes are not part of this neutral
+portable preview.
+
 ## Build from source
 
 Requirements on the build host are Git, Python 3.12 or newer, Flatpak and the

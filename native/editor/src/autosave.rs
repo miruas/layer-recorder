@@ -8,7 +8,7 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{Arc, Mutex, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -33,8 +33,14 @@ struct Snapshot {
     revision: u64,
 }
 
+#[derive(Default)]
+struct State {
+    latest: BTreeMap<PathBuf, Snapshot>,
+    wake_queued: bool,
+}
+
 enum Command {
-    Save(Snapshot),
+    Wake,
     Flush(u64),
     Barrier(Vec<PathBuf>, mpsc::Sender<std::result::Result<(), String>>),
 }
@@ -42,25 +48,45 @@ enum Command {
 pub struct Autosave {
     sender: mpsc::Sender<Command>,
     pub results: mpsc::Receiver<Event>,
+    shared: Arc<Mutex<State>>,
 }
 
 impl Autosave {
     pub fn new() -> Self {
         let (sender, requests) = mpsc::channel();
         let (events, results) = mpsc::channel();
+        let shared = Arc::new(Mutex::new(State::default()));
+        let worker_shared = shared.clone();
         // Dropping the handle detaches the worker. GUI shutdown waits for an
         // asynchronous Flush acknowledgement instead of joining on the UI thread.
-        thread::spawn(move || worker(requests, events));
-        Self { sender, results }
+        thread::spawn(move || worker(requests, events, worker_shared));
+        Self {
+            sender,
+            results,
+            shared,
+        }
     }
 
     pub fn submit(&self, path: PathBuf, fallback_project: Value, model: Value, revision: u64) {
-        let _ = self.sender.send(Command::Save(Snapshot {
-            path,
-            fallback_project,
-            model,
-            revision,
-        }));
+        // Keep one latest model per document even if a filesystem read blocks
+        // the worker. The command queue contains only lightweight notifications.
+        let mut state = self
+            .shared
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.latest.insert(
+            path.clone(),
+            Snapshot {
+                path,
+                fallback_project,
+                model,
+                revision,
+            },
+        );
+        if !state.wake_queued {
+            state.wake_queued = true;
+            let _ = self.sender.send(Command::Wake);
+        }
     }
 
     pub fn barrier(&self, path: PathBuf) -> mpsc::Receiver<std::result::Result<(), String>> {
@@ -215,7 +241,33 @@ fn flush_all(
     write_pending(pending, failed, events);
 }
 
-fn worker(requests: mpsc::Receiver<Command>, events: mpsc::Sender<Event>) {
+fn collect_latest(
+    shared: &Arc<Mutex<State>>,
+    pending: &mut BTreeMap<PathBuf, Snapshot>,
+    failed: &mut BTreeMap<PathBuf, Snapshot>,
+    clear_wake: bool,
+) {
+    let latest = {
+        let mut state = shared.lock().unwrap_or_else(|error| error.into_inner());
+        if clear_wake {
+            state.wake_queued = false;
+        }
+        std::mem::take(&mut state.latest)
+    };
+    // No filesystem calls or model serialization occur while holding the
+    // shared mutex. Only a dequeued Wake owns/reset the notification flag.
+    for (_, mut snapshot) in latest {
+        snapshot.path = normalized_path(snapshot.path);
+        failed.remove(&snapshot.path);
+        pending.insert(snapshot.path.clone(), snapshot);
+    }
+}
+
+fn worker(
+    requests: mpsc::Receiver<Command>,
+    events: mpsc::Sender<Event>,
+    shared: Arc<Mutex<State>>,
+) {
     let mut pending = BTreeMap::new();
     let mut failed = BTreeMap::new();
     let mut deadline: Option<Instant> = None;
@@ -223,6 +275,7 @@ fn worker(requests: mpsc::Receiver<Command>, events: mpsc::Sender<Event>) {
         // Check before receiving: recv_timeout(0) can still receive a queued
         // message. This deadline must not be starved by a continuous drag.
         if deadline.is_some_and(|time| Instant::now() >= time) {
+            collect_latest(&shared, &mut pending, &mut failed, false);
             write_pending(&mut pending, &mut failed, &events);
             deadline = None;
         }
@@ -234,13 +287,14 @@ fn worker(requests: mpsc::Receiver<Command>, events: mpsc::Sender<Event>) {
                 .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
         };
         match message {
-            Ok(Command::Save(mut snapshot)) => {
-                snapshot.path = normalized_path(snapshot.path);
-                failed.remove(&snapshot.path);
-                pending.insert(snapshot.path.clone(), snapshot);
-                deadline.get_or_insert_with(|| Instant::now() + COALESCE);
+            Ok(Command::Wake) => {
+                collect_latest(&shared, &mut pending, &mut failed, true);
+                if !pending.is_empty() {
+                    deadline.get_or_insert_with(|| Instant::now() + COALESCE);
+                }
             }
             Ok(Command::Barrier(paths, reply)) => {
+                collect_latest(&shared, &mut pending, &mut failed, false);
                 write_pending(&mut pending, &mut failed, &events);
                 deadline = None;
                 let failed_path = paths
@@ -258,15 +312,18 @@ fn worker(requests: mpsc::Receiver<Command>, events: mpsc::Sender<Event>) {
                 let _ = reply.send(result);
             }
             Ok(Command::Flush(token)) => {
+                collect_latest(&shared, &mut pending, &mut failed, false);
                 flush_all(&mut pending, &mut failed, &events);
                 deadline = None;
                 let _ = events.send(Event::Flushed(token));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                collect_latest(&shared, &mut pending, &mut failed, false);
                 write_pending(&mut pending, &mut failed, &events);
                 deadline = None;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                collect_latest(&shared, &mut pending, &mut failed, false);
                 flush_all(&mut pending, &mut failed, &events);
                 return;
             }
@@ -459,6 +516,84 @@ mod tests {
     }
 
     #[test]
+    fn blocked_fifo_stress_retains_only_one_latest_model_per_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("project.katman");
+        let name = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let (sender, requests) = mpsc::channel();
+        let (events, results) = mpsc::channel();
+        let shared = Arc::new(Mutex::new(State::default()));
+        let worker_shared = shared.clone();
+        let handle = thread::spawn(move || worker(requests, events, worker_shared));
+        let autosave = Autosave {
+            sender,
+            results,
+            shared,
+        };
+        autosave.submit(path.clone(), json!({"sources":[]}), json!({"x":0}), 0);
+        autosave.flush(20);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut writer = loop {
+            match fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&path)
+            {
+                Ok(writer) => break writer,
+                Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "Worker did not begin its FIFO read"
+                    );
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        let started = Instant::now();
+        for revision in 1..=1000 {
+            autosave.submit(
+                path.clone(),
+                json!({"sources":[]}),
+                json!({"x":revision,"points":vec![revision;128]}),
+                revision,
+            );
+        }
+        let elapsed = started.elapsed();
+        let (count, revision, wake_queued) = {
+            let state = autosave.shared.lock().unwrap();
+            (
+                state.latest.len(),
+                state.latest.get(&path).map(|snapshot| snapshot.revision),
+                state.wake_queued,
+            )
+        };
+        autosave.flush(21);
+        // Always unblock the real FIFO before asserting, then join to prove
+        // this stress case leaves no blocked persistence thread behind.
+        writer
+            .write_all(br#"{"sources":[],"opaque":"keep"}"#)
+            .unwrap();
+        drop(writer);
+        let saved = until_flush(&autosave, 21);
+        let project = read(&path);
+        drop(autosave);
+        handle.join().unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(revision, Some(1000));
+        assert!(wake_queued);
+        assert!(elapsed < Duration::from_secs(1));
+        assert!(
+            saved.iter().all(|(_, _, result)| result.is_ok()),
+            "{saved:?}"
+        );
+        assert_eq!(project["studio"]["x"], 1000);
+        assert_eq!(project["studio"]["points"], json!(vec![1000; 128]));
+        assert_eq!(project["opaque"], "keep");
+    }
+
+    #[test]
     fn blocked_fifo_read_does_not_block_submit_and_flush_persists_latest_state() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("project.katman");
@@ -468,8 +603,14 @@ mod tests {
         // Production intentionally does not join from Drop.
         let (sender, requests) = mpsc::channel();
         let (events, results) = mpsc::channel();
-        let handle = thread::spawn(move || worker(requests, events));
-        let autosave = Autosave { sender, results };
+        let shared = Arc::new(Mutex::new(State::default()));
+        let worker_shared = shared.clone();
+        let handle = thread::spawn(move || worker(requests, events, worker_shared));
+        let autosave = Autosave {
+            sender,
+            results,
+            shared,
+        };
         autosave.submit(path.clone(), json!({}), json!({"x":1}), 1);
         autosave.flush(10);
         let deadline = Instant::now() + Duration::from_secs(3);
