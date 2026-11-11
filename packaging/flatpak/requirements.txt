@@ -1,0 +1,4 @@
+# Exact runtime source package versions; tools/build-flatpak-python.py verifies sdists.
+Pillow==12.3.0
+numpy==2.5.4
+# OpenCV is built from pinned sources without its own FFmpeg/video decoder.

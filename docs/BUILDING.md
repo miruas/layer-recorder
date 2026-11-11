@@ -1,18 +1,20 @@
 # Building Layer
 
+The [Flatpak recipe](FLATPAK.md) builds against a fixed SDK/runtime and is the cross-distribution path. Native builds link the local distribution libraries.
+
 ## Application and native components
 
-Follow [Installation](INSTALLATION.md) for Linux/Hyprland, PipeWire, GPU drivers and development dependencies. Install stable Rust and Cargo (Rust 1.85+). The repository preserves upstream GSR history and includes its modified source under `upstream/gpu-screen-recorder`. Optional native sources are pinned in `packaging/native-lock.json`; the build tool downloads those exact revisions and applies the checked-in patches.
+Follow [Installation](INSTALLATION.md) for Linux, optional PipeWire, GPU drivers and development dependencies. Install stable Rust and Cargo (the current stable Rust toolchain). The repository preserves upstream GSR history and includes its modified source under `upstream/gpu-screen-recorder`. Optional native sources are pinned in `packaging/native-lock.json`; the build tool downloads those exact revisions and applies the checked-in patches.
 
 ```sh
 git clone https://github.com/miruas/layer-recorder.git
 cd layer-recorder
-git checkout v0.7.0
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e . meson ninja
 python tools/build-native.py gpu-screen-recorder
 python tools/build-native.py recorder
+python tools/build-native.py editor
 python tools/build-native.py gsr-ui
 python tools/build-native.py whisper
 python install.py --profile auto --enable
@@ -32,11 +34,11 @@ python3 tools/release-container.py
 
 Outputs under `dist/`:
 
-- `layer-recorder-<version>-1-x86_64.pkg.tar.zst`: compiled components plus the native Python/Qt app.
+- `layer-recorder-<version>-1-x86_64.pkg.tar.zst`: compiled recorder, Rust archive/editor and headless Python media workers.
 - `layer-recorder-<version>-corresponding-sources.tar.gz`: the exact application and patched native source trees, including bundled submodules and original licenses.
 - `layer-recorder-<version>-SHA256SUMS`: hashes of both artifacts.
 
-The build container supplies a generic build path and installed-package inventory, avoiding host home paths and host package lists in `.BUILDINFO`. Dependencies remain distribution packages rather than bundled copies of Qt/FFmpeg/drivers. Package dependencies include FFmpeg ABI versions from the compiled executables. Rebuild against a changed Arch ABI; do not bypass dependency checks. Containers are build/launch checks, not physical GPU certification.
+The build container supplies a generic build path and installed-package inventory, avoiding host home paths and host package lists in `.BUILDINFO`. Dependencies remain distribution packages rather than bundled copies of FFmpeg/drivers. Package dependencies include FFmpeg ABI versions from the compiled executables. Rebuild against a changed Arch ABI; do not bypass dependency checks. Containers are build/launch checks, not physical GPU certification.
 
 The corresponding-source archive includes `layer-recorder/` and exact `external/gsr-ui`, `external/wf-recorder`, `external/whisper` trees. Standard builds use the pinned upstream checkouts; the external trees also permit inspecting/rebuilding the exact shipped patched sources. The checked-in recipes are the installation/build scripts for the release. Retain the complete archive when redistributing binaries.
 
@@ -44,7 +46,7 @@ The corresponding-source archive includes `layer-recorder/` and exact `external/
 
 ```sh
 python -m unittest discover -s tests -v
-QT_QPA_PLATFORM=offscreen python tools/smoke-ui.py
+xvfb-run -a python tools/smoke-ui.py
 python tools/check-public-tree.py
 ```
 

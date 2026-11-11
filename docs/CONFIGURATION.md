@@ -9,8 +9,8 @@ The default file is `${XDG_CONFIG_HOME:-~/.config}/katman/settings.json`. `LAYER
 | `library` | `~/Videos/Layer` | Durable saved-project directory; `~` expands to the local home directory. |
 | `fps` | `60` | Capture FPS, integer 1–240. High rates need suitable hardware. |
 | `bitrate` | `18000` | Video bitrate per display in kbps, 1000–200000. Multiple screens add their bitrates. |
-| `buffer` | `300` | RAM ring length in seconds, 30–3600. |
-| `replay_short` | `60` | Short save duration in seconds; 1–3600 and no longer than the long preset. |
+| `buffer` | `300` | RAM ring length in seconds, 2–86400. |
+| `replay_short` | `60` | Short save duration in seconds; 1–86400 and no longer than the long preset. |
 | `replay_long` | `300` | Long save duration in seconds; no longer than the buffer. |
 | `shortcuts_enabled` | `true` | Register Layer-owned global shortcuts with Hyprland. |
 | `shortcuts` | see below | Editable `ui`, `record`, `replay`, `save-1`, `save-5` combinations; empty disables an action. |
@@ -47,16 +47,45 @@ There is no disk fallback for replay. Layer requires a private memory-backed `/d
 
 At 18000 kbps, one video stream is approximately 675 MB for five minutes before audio and overhead. Multiple displays and independent Opus audio add usage. Monitor your actual memory/storage for the chosen setup.
 
-## Themes
+## Shared GPU Screen Recorder preferences
 
-No personal system theme files are bundled. When an existing theme-manager is present under the user's configuration, Layer reads its selected preset and semantic palette roles live. Otherwise it uses a built-in native dark palette. Theme files are never modified by Layer.
+The normal GSR UI is the capture settings editor. Layer reads its `config_ui`
+without rewriting it: replay/record codec, frame rate, quality preset or custom
+bitrate, replay buffer and short/long save durations. Capture quality never
+changes export CRF. The active capture session keeps its format until stopped
+and restarted; ordinary recordings are not interrupted by settings edits.
 
-## Native settings
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `gsr_preferences` | `true` | Read canonical GSR preferences; `false` uses Layer's capture values. |
+| `gsr_source` | `gsr` | Advanced source selector: `gsr`/`auto`, or `layer`/`off` to opt out. |
+| `gsr_config` | empty | Explicit GSR config file, unless `LAYER_GSR_CONFIG` is set. |
+| `capture_quality` | `custom` | `medium`, `high`, `very_high`, `ultra` use GSR QP presets; `custom` uses CBR bitrate. |
 
-Open **Settings** from the recording library. Recording exposes H.264 (AVC), H.265 (HEVC), AV1, GPU profile and the default export encoder. Replay exposes the RAM buffer, both save presets and startup behavior. Selecting **Apply recording changes now** first saves the available Layer replay, then restarts idle capture; active ordinary recordings are rejected without interruption.
+`LAYER_GSR_CONFIG` has priority. Otherwise Layer selects native GSR's config,
+then an existing original GSR Flatpak config. The bundled overlay edits that
+same selected file. Flatpak does not create a disconnected copy. Unrelated GSR
+fields remain intact. The legacy `gsr_sync` flag only controls the explicit
+write helper; it is separate from default read integration.
 
-Shortcuts are single combinations, written in Qt portable form (for example `Meta+Alt+Z`). Defaults: Open Layer `Meta+Alt+Z`, record `Meta+Alt+F9`, replay `Meta+Alt+F10`, short save `Meta+Alt+F7`, long save `Meta+Alt+F8`. Clear a field to disable it. Only owned Hyprland bindings are changed. Conflicting compositor bindings are reported before saving. New settings are reapplied within five seconds and after a compositor reload.
+HEVC/AV1 10-bit and HDR codec names are preserved exactly during capture and
+checked against GSR's advertised hardware codecs. HDR editing/color management
+is not certified; keep original media for color-managed workflows.
 
-The GSR Integration tab edits the existing overlay, record, replay and save shortcuts. With synchronization enabled, Save also updates GSR's normal/replay codec and buffer length, retaining unrelated settings and keeping save notifications disabled. GSR preferences are backed up under the private user state directory. The bundled patched overlay reloads keys immediately; an unpatched overlay may need restarting. Codec changes apply at GSR's next capture start. Layer does not interrupt GSR captures automatically.
+## Shortcuts and startup
 
-GSR's native short video save remains one minute, and its full save uses its own ring length. Mirrored Layer saves use the configurable short/long presets. These outputs are separate.
+Normal GSR global settings provide shared record/replay/save keys and an
+**Open Layer editor** shortcut, default Meta+Alt+Z. Alt+Z retains the overlay.
+Short/long durations are configurable in GSR replay settings, in seconds,
+within the buffer. Older config files without these fields inherit Layer's
+presets, shortened to fit a smaller buffer. `layer save-1` and `layer save-5`
+remain compatibility command names and use the configured durations.
+
+The `shortcuts` object contains optional Hyprland-owned bindings. Other desktop
+shortcut tools can bind the same CLI commands; capture does not depend on that
+adapter. `python install.py --enable` also installs a standard XDG autostart
+entry, so startup works without systemd. Set `auto_replay` to true, or let
+GSR's successful replay action start the shared Layer ring.
+
+The public editor uses a neutral native palette. Personal theme-manager
+integration is outside the public source tree.

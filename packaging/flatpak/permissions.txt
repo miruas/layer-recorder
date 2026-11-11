@@ -1,0 +1,18 @@
+# GSR capture and the native editor run in the same app/runtime.
+--device=all
+--filesystem=host
+--filesystem=xdg-run/pipewire-0
+--share=ipc
+--share=network
+--socket=pulseaudio
+--socket=wayland
+--socket=x11
+# Matching static host helpers use flatpak-spawn, as in upstream GSR.
+--talk-name=org.freedesktop.Flatpak
+--talk-name=org.kde.StatusNotifierWatcher
+--talk-name=org.kde.KWin
+--talk-name=org.gnome.Shell.Extensions
+# Both the bundled overlay and existing GSR edit the same selected preferences.
+--filesystem=~/.config/gpu-screen-recorder
+--filesystem=~/.var/app/com.dec05eba.gpu_screen_recorder/config/gpu-screen-recorder
+--env=LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri:/usr/lib/x86_64-linux-gnu/dri/intel-vaapi-driver:/usr/lib/x86_64-linux-gnu/dri/nvidia-vaapi-driver:/usr/lib/x86_64-linux-gnu/GL/lib/dri:/usr/lib/aarch64-linux-gnu/dri:/usr/lib/aarch64-linux-gnu/GL/lib/dri:/app/lib/dri

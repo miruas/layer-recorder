@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0 (unreleased)
+
+- Replace the Qt archive/editor with one native Rust window; move loading, font discovery, waveform analysis, playback teardown and media work off the interface thread.
+- Preserve version-1 independent-source recordings and editing, with native voiceover, batch export, timeline zoom/snapping and real audio waveforms.
+- Read shared GSR recording/replay preferences and expose configurable short/long replay durations and editor shortcut in the normal GSR overlay.
+- Separate optional desktop identity providers from GSR capture; add PulseAudio device capture when dynamic PipeWire application discovery is unavailable.
+- Add a Freedesktop 26.08 Flatpak recipe with pinned static host helpers, full editor FFmpeg, speech executable and legacy Intel driver; never bundle speech models or user configuration.
+- Add Debian/openSUSE VM tooling and X11/Wayland startup regression checks. See the compatibility matrix for tested cases and outstanding hardware coverage.
+- Report capture startup failures in status and preserve ordinary GSR startup/shortcut behavior.
+- Coalesce autosave off the interface thread, gate media jobs on persisted source metadata, and flush edits asynchronously on close with recoverable save failures.
+
 ## 0.7.0
 
 - Rust capture daemon, private RAM allocator, segment retention/spool and independent-source snapshots.

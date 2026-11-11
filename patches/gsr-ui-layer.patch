@@ -1,8 +1,305 @@
+diff --git a/gsr-ui-cli.1 b/gsr-ui-cli.1
+index 865aeec..a8a88a4 100644
+--- a/gsr-ui-cli.1
++++ b/gsr-ui-cli.1
+@@ -58,10 +58,10 @@ Stop replay. Does nothing if replay is not running.
+ Save the current replay.
+ .TP
+ .B replay-save-1-min
+-Save a replay of the last 1 minute.
++Save a replay at the configured short duration.
+ .TP
+ .B replay-save-10-min
+-Save a replay of the last 10 minutes.
++Save a replay at the configured long duration.
+ .TP
+ .B take-screenshot
+ Take a screenshot.
+diff --git a/include/Config.hpp b/include/Config.hpp
+index fa250b1..5a11f36 100644
+--- a/include/Config.hpp
++++ b/include/Config.hpp
+@@ -1,3 +1,4 @@
++/* Modified by Layer on 2026-11-11: independent-source recording and native editor integration. */
+ 
+ #pragma once
+ 
+@@ -86,6 +87,7 @@ namespace gsr {
+         std::string notification_speed = "normal";
+         std::string language;
+         ConfigHotkey show_hide_hotkey;
++        ConfigHotkey layer_editor_hotkey;
+     };
+ 
+     struct YoutubeStreamConfig {
+@@ -162,6 +164,8 @@ namespace gsr {
+         std::string save_directory;
+         std::string container = "mp4";
+         int32_t replay_time = 60;
++        int32_t short_save_duration = 60;
++        int32_t long_save_duration = 300;
+         std::string replay_storage = "ram";
+         ConfigHotkey start_stop_hotkey;
+         ConfigHotkey save_hotkey;
+diff --git a/include/Overlay.hpp b/include/Overlay.hpp
+index 57c20be..53cd6d5 100644
+--- a/include/Overlay.hpp
++++ b/include/Overlay.hpp
+@@ -1,3 +1,4 @@
++/* Modified by Layer on 2026-11-11: independent-source recording and native editor integration. */
+ #pragma once
+ 
+ #include "gui/PageStack.hpp"
+@@ -309,7 +310,7 @@ namespace gsr {
+         bool replay_launched_manually = false;
+         bool replay_launched_once = false;
+         bool replay_recording = false;
+-        int replay_save_duration_min = 0;
++        int replay_save_duration_sec = 0;
+         mgl::Clock replay_duration_clock;
+         double replay_saved_duration_sec = 0.0;
+         bool replay_restart_on_save = false;
+diff --git a/include/gui/GlobalSettingsPage.hpp b/include/gui/GlobalSettingsPage.hpp
+index c0a3576..760329b 100644
+--- a/include/gui/GlobalSettingsPage.hpp
++++ b/include/gui/GlobalSettingsPage.hpp
+@@ -1,3 +1,4 @@
++/* Modified by Layer on 2026-11-11: independent-source recording and native editor integration. */
+ #pragma once
+ 
+ #include "StaticPage.hpp"
+@@ -34,7 +35,8 @@ namespace gsr {
+         TAKE_SCREENSHOT,
+         TAKE_SCREENSHOT_REGION,
+         TAKE_SCREENSHOT_WINDOW,
+-        SHOW_HIDE
++        SHOW_HIDE,
++        OPEN_LAYER_EDITOR
+     };
+ 
+     class GlobalSettingsPage : public StaticPage {
+@@ -68,6 +70,7 @@ namespace gsr {
+         std::unique_ptr<RadioButton> create_enable_keyboard_hotkeys_button();
+         std::unique_ptr<RadioButton> create_enable_joystick_hotkeys_button();
+         std::unique_ptr<List> create_show_hide_hotkey_options();
++        std::unique_ptr<List> create_layer_editor_hotkey_options();
+         std::unique_ptr<List> create_replay_on_off_hotkey_options();
+         std::unique_ptr<List> create_replay_save_hotkey_options();
+         std::unique_ptr<List> create_replay_partial_save_1min_hotkey_options();
+@@ -122,6 +125,7 @@ namespace gsr {
+         Button *take_screenshot_region_button_ptr = nullptr;
+         Button *take_screenshot_window_button_ptr = nullptr;
+         Button *show_hide_button_ptr = nullptr;
++        Button *layer_editor_button_ptr = nullptr;
+         RadioButton *notification_speed_button_ptr = nullptr;
+         ComboBox *language_combo_box_ptr = nullptr;
+         CheckBox *exclude_metadata_checkbox_ptr = nullptr;
+diff --git a/include/gui/SettingsPage.hpp b/include/gui/SettingsPage.hpp
+index 3935109..fa79653 100644
+--- a/include/gui/SettingsPage.hpp
++++ b/include/gui/SettingsPage.hpp
+@@ -1,3 +1,4 @@
++/* Modified by Layer on 2026-11-11: independent-source recording and native editor integration. */
+ #pragma once
+ 
+ #include "StaticPage.hpp"
+@@ -123,6 +124,8 @@ namespace gsr {
+         std::unique_ptr<List> create_container_section();
+         std::unique_ptr<List> create_replay_time_entry();
+         std::unique_ptr<List> create_replay_time();
++        std::unique_ptr<List> create_replay_save_durations();
++        std::unique_ptr<List> create_replay_save_duration(const char *label, int value, Entry **entry_out);
+         std::unique_ptr<List> create_replay_storage();
+         std::unique_ptr<RadioButton> create_start_replay_automatically();
+         std::unique_ptr<Widget> create_start_replay_automatically_section();
+@@ -227,6 +230,8 @@ namespace gsr {
+         Entry *stream_url_entry_ptr = nullptr;
+         Entry *stream_key_entry_ptr = nullptr;
+         Entry *replay_time_entry_ptr = nullptr;
++        Entry *replay_short_save_duration_entry_ptr = nullptr;
++        Entry *replay_long_save_duration_entry_ptr = nullptr;
+         RadioButton *replay_storage_button_ptr = nullptr;
+         Label *replay_time_label_ptr = nullptr;
+         RadioButton *turn_on_replay_automatically_mode_ptr = nullptr;
+diff --git a/src/Config.cpp b/src/Config.cpp
+index f51f2dc..7203eb7 100644
+--- a/src/Config.cpp
++++ b/src/Config.cpp
+@@ -1,3 +1,4 @@
++/* Modified by Layer on 2026-11-11: independent-source recording and native editor integration. */
+ #include "../include/Config.hpp"
+ #include "../include/Utils.hpp"
+ #include "../include/GsrInfo.hpp"
+@@ -158,6 +159,7 @@ namespace gsr {
+         screenshot_config.take_screenshot_window_hotkey = {mgl::Keyboard::Printscreen, HOTKEY_MOD_LSHIFT};
+ 
+         main_config.show_hide_hotkey = {mgl::Keyboard::Z, HOTKEY_MOD_LALT};
++        main_config.layer_editor_hotkey = {mgl::Keyboard::Z, HOTKEY_MOD_LSUPER | HOTKEY_MOD_LALT};
+ 
+         // TODO: Change the hotkey code (default values) to check if the hotkey is already configured.
+         // If it's already configured then unset the hotkey (0 values).
+@@ -185,6 +187,7 @@ namespace gsr {
+             {"main.notification_speed", &config.main_config.notification_speed},
+             {"main.language", &config.main_config.language},
+             {"main.show_hide_hotkey", &config.main_config.show_hide_hotkey},
++            {"main.layer_editor_hotkey", &config.main_config.layer_editor_hotkey},
+ 
+             {"streaming.record_options.record_area_option", &config.streaming_config.record_options.record_area_option},
+             {"streaming.record_options.record_area_width", &config.streaming_config.record_options.record_area_width},
+@@ -316,6 +319,8 @@ namespace gsr {
+             {"replay.save_directory", &config.replay_config.save_directory},
+             {"replay.container", &config.replay_config.container},
+             {"replay.time", &config.replay_config.replay_time},
++            {"replay.short_save_duration", &config.replay_config.short_save_duration},
++            {"replay.long_save_duration", &config.replay_config.long_save_duration},
+             {"replay.replay_storage", &config.replay_config.replay_storage},
+             {"replay.start_stop_hotkey", &config.replay_config.start_stop_hotkey},
+             {"replay.save_hotkey", &config.replay_config.save_hotkey},
+@@ -532,6 +537,9 @@ namespace gsr {
+     }
+ 
+     static std::string get_config_path() {
++        const char *override_file = getenv("LAYER_GSR_CONFIG");
++        if(override_file && override_file[0])
++            return override_file;
+         return get_config_dir() + "/config_ui";
+     }
+ 
+@@ -644,6 +652,45 @@ namespace gsr {
+         return true;
+     }
+ 
++    static void validate_layer_editor_hotkey(Config &config) {
++        ConfigHotkey *editor = &config.main_config.layer_editor_hotkey;
++        if(editor->key == 0)
++            return;
++        // Preserve existing GSR shortcuts when upgrading an older configuration.
++        // The new action can be assigned a different key in Global settings.
++        for(const auto &option : get_config_options(config)) {
++            if(!std::holds_alternative<ConfigHotkey*>(option.second))
++                continue;
++            const ConfigHotkey *other = std::get<ConfigHotkey*>(option.second);
++            if(other != editor && *other == *editor) {
++                *editor = {0, 0};
++                return;
++            }
++        }
++    }
++
++    static void validate_replay_save_durations(Config &config) {
++        int32_t &replay_time = config.replay_config.replay_time;
++        if(replay_time < 1)
++            replay_time = 1;
++        else if(replay_time > 86400)
++            replay_time = 86400;
++
++        int32_t &short_duration = config.replay_config.short_save_duration;
++        if(short_duration < 1)
++            short_duration = 60;
++        if(short_duration > replay_time)
++            short_duration = replay_time;
++
++        int32_t &long_duration = config.replay_config.long_save_duration;
++        if(long_duration < 1)
++            long_duration = 300;
++        if(long_duration > replay_time)
++            long_duration = replay_time;
++        if(long_duration < short_duration)
++            long_duration = short_duration;
++    }
++
+     std::optional<Config> read_config(const SupportedCaptureOptions &capture_options) {
+         std::optional<Config> config;
+ 
+@@ -660,11 +707,15 @@ namespace gsr {
+         else if(!parse_config_json(file_content, config.value()))
+             return std::nullopt;
+ 
++        validate_layer_editor_hotkey(config.value());
++        validate_replay_save_durations(config.value());
+         upgrade_deprecated_config_options(config.value());
+         return config;
+     }
+ 
+     void save_config(Config &config) {
++        validate_layer_editor_hotkey(config);
++        validate_replay_save_durations(config);
+         config.main_config.config_file_version = GSR_CONFIG_FILE_VERSION;
+ 
+         const std::string config_path = get_config_path();
+@@ -679,6 +730,13 @@ namespace gsr {
+         }
+ 
+         picojson::object root_json;
++        std::string previous_file_content;
++        if(file_get_content(config_path.c_str(), previous_file_content)) {
++            picojson::value previous_json;
++            if(picojson::parse(previous_json, previous_file_content).empty() && previous_json.is<picojson::object>())
++                root_json = previous_json.get<picojson::object>();
++        }
++
+         for(auto &it : get_config_options(config)) {
+             json_create_path(root_json, it.first) = std::visit([](auto *value) { return to_json(*value); }, it.second);
+         }
+diff --git a/src/GlobalHotkeys/GlobalHotkeysLinux.cpp b/src/GlobalHotkeys/GlobalHotkeysLinux.cpp
+index fc2a216..090baf9 100644
+--- a/src/GlobalHotkeys/GlobalHotkeysLinux.cpp
++++ b/src/GlobalHotkeys/GlobalHotkeysLinux.cpp
+@@ -1,3 +1,4 @@
++/* Modified by Layer on 2026-11-11: independent-source recording and native editor integration. */
+ #include "../../include/GlobalHotkeys/GlobalHotkeysLinux.hpp"
+ #include <sys/wait.h>
+ #include <sys/prctl.h>
+@@ -155,7 +156,7 @@ namespace gsr {
+             }
+ 
+             if(inside_flatpak) {
+-                const char *args[] = { "flatpak-spawn", "--host", "/var/lib/flatpak/app/com.dec05eba.gpu_screen_recorder/current/active/files/bin/kms-server-proxy", "launch-gsr-global-hotkeys", user_homepath, grab_type_arg, nullptr };
++                const char *args[] = { "flatpak-spawn", "--host", "/var/lib/flatpak/app/io.github.miruas.Layer/current/active/files/bin/kms-server-proxy", "launch-gsr-global-hotkeys", user_homepath, grab_type_arg, nullptr };
+                 execvp(args[0], (char* const*)args);
+             } else {
+                 const char *args[] = { "gsr-global-hotkeys", grab_type_arg, nullptr };
+diff --git a/src/LedIndicator.cpp b/src/LedIndicator.cpp
+index 217f0fc..9476cc7 100644
+--- a/src/LedIndicator.cpp
++++ b/src/LedIndicator.cpp
+@@ -1,3 +1,4 @@
++/* Modified by Layer on 2026-11-11: independent-source recording and native editor integration. */
+ #include "../include/LedIndicator.hpp"
+ 
+ #include <unistd.h>
+@@ -100,7 +101,7 @@ namespace gsr {
+         } else if(gsr_global_hotkeys_pid == 0) { // Child
+             prctl(PR_SET_PDEATHSIG, SIGTERM);
+             if(inside_flatpak) {
+-                const char *args[] = { "flatpak-spawn", "--host", "/var/lib/flatpak/app/com.dec05eba.gpu_screen_recorder/current/active/files/bin/kms-server-proxy", "launch-gsr-global-hotkeys", user_homepath, "--set-led", "Scroll Lock", enabled ? "on" : "off", nullptr };
++                const char *args[] = { "flatpak-spawn", "--host", "/var/lib/flatpak/app/io.github.miruas.Layer/current/active/files/bin/kms-server-proxy", "launch-gsr-global-hotkeys", user_homepath, "--set-led", "Scroll Lock", enabled ? "on" : "off", nullptr };
+                 execvp(args[0], (char* const*)args);
+             } else {
+                 const char *args[] = { "gsr-global-hotkeys", "--set-led", "Scroll Lock", enabled ? "on" : "off", nullptr };
 diff --git a/src/Overlay.cpp b/src/Overlay.cpp
-index 921bdd3..a938837 100644
+index 921bdd3..8933c94 100644
 --- a/src/Overlay.cpp
 +++ b/src/Overlay.cpp
-@@ -67,6 +67,14 @@ extern "C" {
+@@ -1,3 +1,4 @@
++/* Modified by Layer on 2026-11-11: independent-source recording and native editor integration. */
+ #include "../include/Overlay.hpp"
+ #include "../include/Theme.hpp"
+ #include "../include/Config.hpp"
+@@ -33,8 +34,12 @@
+ 
+ #include <iomanip>
+ #include <string.h>
++#include <errno.h>
+ #include <assert.h>
+ #include <sys/wait.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <sys/time.h>
+ #include <limits.h>
+ #include <fcntl.h>
+ #include <poll.h>
+@@ -67,6 +72,99 @@ extern "C" {
  }
  
  namespace gsr {
@@ -14,10 +311,130 @@ index 921bdd3..a938837 100644
 +        const char *args[] = { "layer", "bridge", action, nullptr };
 +        exec_program_daemonized(args, false);
 +    }
++
++    // GSR's signal-based save actions have fixed durations.  Use its IPC
++    // interface for the configured short/long durations, with an exact-signal
++    // fallback for older recorders that predate the IPC save request.
++    static std::string get_replay_ipc_socket_path() {
++        const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
++        const std::string directory = runtime_dir ? runtime_dir : "/tmp";
++        char filename[64];
++        snprintf(filename, sizeof(filename), "gsr-ui-replay-%d.sock", (int)getpid());
++        std::string path = directory + "/" + filename;
++        if(path.size() >= sizeof(((struct sockaddr_un*)nullptr)->sun_path)) {
++            path = std::string("/tmp/") + filename;
++        }
++        return path;
++    }
++
++    static bool save_replay_via_ipc(const std::string &socket_path, int seconds) {
++        if(socket_path.empty() || socket_path.size() >= sizeof(((struct sockaddr_un*)nullptr)->sun_path))
++            return false;
++
++        struct sockaddr_un address;
++        memset(&address, 0, sizeof(address));
++        address.sun_family = AF_UNIX;
++        memcpy(address.sun_path, socket_path.c_str(), socket_path.size());
++
++        const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
++        if(fd < 0)
++            return false;
++
++        struct timeval timeout;
++        timeout.tv_sec = 2;
++        timeout.tv_usec = 0;
++        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
++
++        if(connect(fd, (const struct sockaddr*)&address, sizeof(address)) == -1) {
++            close(fd);
++            return false;
++        }
++
++        char request[128];
++        const int request_size = snprintf(request, sizeof(request), "{\"id\":1,\"name\":\"save-replay\",\"data\":{\"seconds\":%d}}\n", seconds);
++        bool success = false;
++        if(request_size > 0 && request_size < (int)sizeof(request)) {
++            success = true;
++            int offset = 0;
++            while(offset < request_size) {
++                const ssize_t bytes_sent = send(fd, request + offset, request_size - offset, MSG_NOSIGNAL);
++                if(bytes_sent > 0) {
++                    offset += (int)bytes_sent;
++                    continue;
++                }
++                if(bytes_sent == -1 && errno == EINTR)
++                    continue;
++                success = false;
++                break;
++            }
++        }
++
++        close(fd);
++        return success;
++    }
++
++    static int replay_signal_for_exact_seconds(int seconds) {
++        switch(seconds) {
++            case 10:   return SIGRTMIN + 1;
++            case 30:   return SIGRTMIN + 2;
++            case 60:   return SIGRTMIN + 3;
++            case 300:  return SIGRTMIN + 4;
++            case 600:  return SIGRTMIN + 5;
++            case 1800: return SIGRTMIN + 6;
++            default:   return 0;
++        }
++    }
++
++    static bool request_save_replay(pid_t recorder_process, const std::string &ipc_socket_path, int seconds) {
++        if(save_replay_via_ipc(ipc_socket_path, seconds))
++            return true;
++
++        const int signal_value = replay_signal_for_exact_seconds(seconds);
++        if(signal_value == 0)
++            return false;
++
++        return kill(recorder_process, signal_value) == 0;
++    }
++
      static const mgl::Color bg_color(0, 0, 0, 100);
      static const double force_window_on_top_timeout_seconds = 1.0;
      static const double replay_status_update_check_timeout_seconds = 1.5;
-@@ -1571,6 +1579,22 @@ namespace gsr {
+@@ -332,6 +430,14 @@ namespace gsr {
+     }
+ 
+     static void bind_linux_hotkeys(GlobalHotkeysLinux *global_hotkeys, Overlay *overlay, bool enable_region_exit) {
++        global_hotkeys->bind_key_press(
++            config_hotkey_to_hotkey(overlay->get_config().main_config.layer_editor_hotkey),
++            "open_layer_editor", [overlay](const std::string&) {
++                overlay->hide_next_frame();
++                const char *args[] = {"layer", "ui", nullptr};
++                exec_program_daemonized(args);
++            });
++
+         global_hotkeys->bind_key_press(
+             config_hotkey_to_hotkey(overlay->get_config().main_config.show_hide_hotkey),
+             "toggle_show", [overlay](const std::string &id) {
+@@ -506,7 +612,7 @@ namespace gsr {
+         }
+     }
+ 
+-    static const char *flatpak_gsr_game_tracker_path = "/var/lib/flatpak/app/com.dec05eba.gpu_screen_recorder/current/active/files/bin/gsr-game-tracker";
++    static const char *flatpak_gsr_game_tracker_path = "/var/lib/flatpak/app/io.github.miruas.Layer/current/active/files/bin/gsr-game-tracker";
+ 
+     static pid_t launch_gsr_game_tracker(int *stdout_fd) {
+         const bool is_flatpak = getenv("FLATPAK_ID") != nullptr;
+@@ -1505,8 +1611,8 @@ namespace gsr {
+             replay_dropdown_button_ptr = button.get();
+             button->add_item(TR("Turn on"), "start", config.replay_config.start_stop_hotkey.to_string(false, false));
+             button->add_item(TR("Save"), "save", config.replay_config.save_hotkey.to_string(false, false));
+-            button->add_item(TR("Save 1 min"), "save_1_min", config.replay_config.save_1_min_hotkey.to_string(false, false));
+-            button->add_item(TR("Save 10 min"), "save_10_min", config.replay_config.save_10_min_hotkey.to_string(false, false));
++            button->add_item(TR("Save short"), "save_1_min", config.replay_config.save_1_min_hotkey.to_string(false, false));
++            button->add_item(TR("Save long"), "save_10_min", config.replay_config.save_10_min_hotkey.to_string(false, false));
+             button->add_item(TR("Settings"), "settings");
+             button->set_item_icon("start", &get_theme().play_texture);
+             button->set_item_icon("save", &get_theme().save_texture);
+@@ -1571,6 +1677,22 @@ namespace gsr {
              main_buttons_list->add_widget(std::move(button));
          }
  
@@ -32,7 +449,7 @@ index 921bdd3..a938837 100644
 +            button->on_click = [this](const std::string &id) {
 +                const char *katman_args[] = {"layer", id.c_str(), nullptr};
 +                hide();
-+                exec_program_on_host_daemonized(katman_args);
++                exec_program_daemonized(katman_args);
 +            };
 +            main_buttons_list->add_widget(std::move(button));
 +        }
@@ -40,7 +457,16 @@ index 921bdd3..a938837 100644
          const mgl::vec2f main_buttons_list_size = main_buttons_list->get_size();
          main_buttons_list->set_position((mgl::vec2f(window_size.x * 0.5f, window_size.y * 0.25f) - main_buttons_list_size * 0.5f).floor());
          front_page_ptr->add_widget(std::move(main_buttons_list));
-@@ -2227,8 +2251,10 @@ namespace gsr {
+@@ -1708,7 +1830,7 @@ namespace gsr {
+ 
+             if(exit_status == 67) {
+                 const bool is_flatpak = getenv("FLATPAK_ID") != nullptr;
+-                const char *startup_command = is_flatpak ? "flatpak run com.dec05eba.gpu_screen_recorder gsr-ui" : "gsr-ui launch-daemon";
++                const char *startup_command = is_flatpak ? "flatpak run io.github.miruas.Layer overlay" : "gsr-ui launch-daemon";
+                 show_notification(
+                     TRF("To enable autorun: install and configure 'dex' (recommended), or manually add '%s' to your desktop autostart entries.", startup_command).c_str(),
+                     10.0,
+@@ -2227,8 +2349,10 @@ namespace gsr {
      void Overlay::reload_config() {
          const SupportedCaptureOptions capture_options = get_supported_capture_options(gsr_info);
          std::optional<Config> new_config = read_config(capture_options);
@@ -52,7 +478,18 @@ index 921bdd3..a938837 100644
      }
  
      void Overlay::unbind_all_keyboard_hotkeys() {
-@@ -2390,7 +2416,9 @@ namespace gsr {
+@@ -2372,8 +2496,8 @@ namespace gsr {
+         double replay_duration_sec = replay_saved_duration_sec;
+         if(replay_duration_sec > current_recording_config.replay_config.replay_time)
+             replay_duration_sec = current_recording_config.replay_config.replay_time;
+-        if(replay_save_duration_min > 0 && replay_duration_sec > replay_save_duration_min * 60)
+-            replay_duration_sec = replay_save_duration_min * 60;
++        if(replay_save_duration_sec > 0 && replay_duration_sec > replay_save_duration_sec)
++            replay_duration_sec = replay_save_duration_sec;
+         return replay_duration_sec;
+     }
+ 
+@@ -2390,7 +2514,9 @@ namespace gsr {
      // This is checked by gsr-game-tracker on the host, since the process ids are host process ids
      static bool is_game_process_tree_pid(pid_t pid) {
          const std::string pid_str = std::to_string(pid);
@@ -63,7 +500,7 @@ index 921bdd3..a938837 100644
          std::string output;
          return exec_program_on_host_get_stdout(args, output) == 0;
      }
-@@ -2503,9 +2531,17 @@ namespace gsr {
+@@ -2503,9 +2629,17 @@ namespace gsr {
              return false;
  
          const FocusedWindow focused_window = desktop_environment->get_focused_window();
@@ -84,7 +521,16 @@ index 921bdd3..a938837 100644
  
          rename_file_to_game_name(filepath, file_game_name);
  
-@@ -2887,6 +2923,7 @@ namespace gsr {
+@@ -2682,7 +2816,7 @@ namespace gsr {
+             case RecordingStatus::NONE:
+                 break;
+             case RecordingStatus::REPLAY: {
+-                replay_save_duration_min = 0;
++                replay_save_duration_sec = 0;
+                 update_ui_replay_stopped();
+                 if(exit_code == 0) {
+                     if(config.replay_config.record_options.show_notifications)
+@@ -2887,6 +3021,7 @@ namespace gsr {
      }
  
      void Overlay::update_ui_recording_started() {
@@ -92,7 +538,7 @@ index 921bdd3..a938837 100644
          if(!visible)
              return;
  
-@@ -2898,6 +2935,7 @@ namespace gsr {
+@@ -2898,6 +3033,7 @@ namespace gsr {
      }
  
      void Overlay::update_ui_recording_stopped() {
@@ -100,7 +546,7 @@ index 921bdd3..a938837 100644
          if(!visible)
              return;
  
-@@ -2935,6 +2973,7 @@ namespace gsr {
+@@ -2935,6 +3071,7 @@ namespace gsr {
      }
  
      void Overlay::update_ui_replay_started() {
@@ -108,7 +554,16 @@ index 921bdd3..a938837 100644
          if(!visible)
              return;
  
-@@ -2948,6 +2987,7 @@ namespace gsr {
+@@ -2943,11 +3080,14 @@ namespace gsr {
+         replay_dropdown_button_ptr->set_description(TR("On"));
+         replay_dropdown_button_ptr->set_item_icon("start", &get_theme().stop_texture);
+         replay_dropdown_button_ptr->set_item_enabled("save", true);
+-        replay_dropdown_button_ptr->set_item_enabled("save_1_min", current_recording_config.replay_config.replay_time >= 60);
+-        replay_dropdown_button_ptr->set_item_enabled("save_10_min", current_recording_config.replay_config.replay_time >= 60 * 10);
++        const int32_t short_save_duration = current_recording_config.replay_config.short_save_duration;
++        const int32_t long_save_duration = current_recording_config.replay_config.long_save_duration;
++        replay_dropdown_button_ptr->set_item_enabled("save_1_min", short_save_duration >= 1 && current_recording_config.replay_config.replay_time >= short_save_duration);
++        replay_dropdown_button_ptr->set_item_enabled("save_10_min", long_save_duration >= 1 && current_recording_config.replay_config.replay_time >= long_save_duration);
      }
  
      void Overlay::update_ui_replay_stopped() {
@@ -116,7 +571,15 @@ index 921bdd3..a938837 100644
          if(!visible)
              return;
  
-@@ -3169,6 +3209,7 @@ namespace gsr {
+@@ -3162,13 +3302,14 @@ namespace gsr {
+         if(recording_status != RecordingStatus::REPLAY || gpu_screen_recorder_process <= 0)
+             return;
+ 
+-        replay_save_duration_min = 0;
++        replay_save_duration_sec = 0;
+         replay_save_show_notification = true;
+         replay_save_clock.restart();
+         replay_saved_duration_sec = replay_duration_clock.get_elapsed_time_seconds();
          if(replay_restart_on_save)
              replay_duration_clock.restart();
  
@@ -124,11 +587,383 @@ index 921bdd3..a938837 100644
          kill(gpu_screen_recorder_process, SIGUSR1);
      }
  
-@@ -3183,6 +3224,7 @@ namespace gsr {
+@@ -3176,28 +3317,36 @@ namespace gsr {
+         if(recording_status != RecordingStatus::REPLAY || gpu_screen_recorder_process <= 0)
+             return;
+ 
+-        if(current_recording_config.replay_config.replay_time < 60)
++        const int32_t save_duration_sec = current_recording_config.replay_config.short_save_duration;
++        if(save_duration_sec < 1 || current_recording_config.replay_config.replay_time < save_duration_sec)
+             return;
+ 
+-        replay_save_duration_min = 1;
++        replay_save_duration_sec = save_duration_sec;
          replay_save_show_notification = true;
          replay_save_clock.restart();
          replay_saved_duration_sec = replay_duration_clock.get_elapsed_time_seconds();
+-        kill(gpu_screen_recorder_process, SIGRTMIN+3);
 +        mirror_layer_action("save-1");
-         kill(gpu_screen_recorder_process, SIGRTMIN+3);
++        if(!request_save_replay(gpu_screen_recorder_process, get_replay_ipc_socket_path(), save_duration_sec)) {
++            show_notification(TR("Failed to save replay at the configured short duration. Restart GPU Screen Recorder replay after updating."), notification_error_timeout_seconds, mgl::Color(255, 0, 0), mgl::Color(255, 0, 0), NotificationType::REPLAY, nullptr, NotificationLevel::ERROR);
++        }
      }
  
+     void Overlay::on_press_save_replay_10_min_replay() {
+         if(recording_status != RecordingStatus::REPLAY || gpu_screen_recorder_process <= 0)
+             return;
+ 
+-        if(current_recording_config.replay_config.replay_time < 60 * 10)
++        const int32_t save_duration_sec = current_recording_config.replay_config.long_save_duration;
++        if(save_duration_sec < 1 || current_recording_config.replay_config.replay_time < save_duration_sec)
+             return;
+ 
+-        replay_save_duration_min = 10;
++        replay_save_duration_sec = save_duration_sec;
+         replay_save_show_notification = true;
+         replay_save_clock.restart();
+         replay_saved_duration_sec = replay_duration_clock.get_elapsed_time_seconds();
+-        kill(gpu_screen_recorder_process, SIGRTMIN+5);
++        mirror_layer_action("save-5");
++        if(!request_save_replay(gpu_screen_recorder_process, get_replay_ipc_socket_path(), save_duration_sec)) {
++            show_notification(TR("Failed to save replay at the configured long duration. Restart GPU Screen Recorder replay after updating."), notification_error_timeout_seconds, mgl::Color(255, 0, 0), mgl::Color(255, 0, 0), NotificationType::REPLAY, nullptr, NotificationLevel::ERROR);
++        }
+     }
+ 
+     static const char* change_container_if_codec_not_supported(const char *video_codec, const char *container) {
+@@ -3340,7 +3489,7 @@ namespace gsr {
+             stop_gpu_screen_recorder_process();
+             gpu_screen_recorder_process = -1;
+             recording_status = RecordingStatus::NONE;
+-            replay_save_duration_min = 0;
++            replay_save_duration_sec = 0;
+             update_ui_replay_stopped();
+             replay_launched_manually = false;
+ 
+@@ -3436,6 +3585,10 @@ namespace gsr {
+         args.push_back("-ro");
+         args.push_back(config.record_config.save_directory.c_str());
+ 
++        const std::string ipc_socket_path = get_replay_ipc_socket_path();
++        args.push_back("-ipc");
++        args.push_back(ipc_socket_path.c_str());
++
+         args.push_back(nullptr);
+ 
+         current_recording_config = config;
+diff --git a/src/Utils.cpp b/src/Utils.cpp
+index 9348807..835c953 100644
+--- a/src/Utils.cpp
++++ b/src/Utils.cpp
+@@ -1,3 +1,4 @@
++/* Modified by Layer on 2026-11-11: independent-source recording and native editor integration. */
+ #include "../include/Utils.hpp"
+ #include "../include/Process.hpp"
+ #include <errno.h> // errno
+@@ -323,7 +324,7 @@ namespace gsr {
+ 
+         const bool is_flatpak = getenv("FLATPAK_ID") != nullptr;
+         const char *exec_line = is_flatpak
+-            ? "Exec=flatpak run com.dec05eba.gpu_screen_recorder gsr-ui"
++            ? "Exec=flatpak run io.github.miruas.Layer overlay"
+             : "Exec=gsr-ui launch-daemon";
+ 
+         std::string content =
+diff --git a/src/gui/GlobalSettingsPage.cpp b/src/gui/GlobalSettingsPage.cpp
+index 4b5f805..be98649 100644
+--- a/src/gui/GlobalSettingsPage.cpp
++++ b/src/gui/GlobalSettingsPage.cpp
+@@ -1,3 +1,4 @@
++/* Modified by Layer on 2026-11-11: independent-source recording and native editor integration. */
+ #include "../../include/gui/GlobalSettingsPage.hpp"
+ 
+ #include "../../include/Overlay.hpp"
+@@ -236,6 +237,21 @@ namespace gsr {
+         return list;
+     }
+ 
++    std::unique_ptr<List> GlobalSettingsPage::create_layer_editor_hotkey_options() {
++        auto list = std::make_unique<List>(List::Orientation::HORIZONTAL, List::Alignment::CENTER);
++
++        list->add_widget(std::make_unique<Label>(get_theme().body_font_desc.c_str(), TR("Open Layer editor:"), get_color_theme().text_color));
++        auto layer_editor_button = std::make_unique<Button>(get_theme().body_font_desc.c_str(), "", mgl::vec2f(0.0f, 0.0f), mgl::Color(0, 0, 0, 120));
++        layer_editor_button_ptr = layer_editor_button.get();
++        list->add_widget(std::move(layer_editor_button));
++
++        layer_editor_button_ptr->on_click = [this] {
++            configure_hotkey_start(ConfigureHotkeyType::OPEN_LAYER_EDITOR);
++        };
++
++        return list;
++    }
++
+     std::unique_ptr<List> GlobalSettingsPage::create_replay_on_off_hotkey_options() {
+         auto list = std::make_unique<List>(List::Orientation::HORIZONTAL, List::Alignment::CENTER);
+ 
+@@ -269,7 +285,7 @@ namespace gsr {
+     std::unique_ptr<List> GlobalSettingsPage::create_replay_partial_save_1min_hotkey_options() {
+         auto list = std::make_unique<List>(List::Orientation::HORIZONTAL, List::Alignment::CENTER);
+ 
+-        list->add_widget(std::make_unique<Label>(get_theme().body_font_desc.c_str(), TR("Save 1 minute replay:"), get_color_theme().text_color));
++        list->add_widget(std::make_unique<Label>(get_theme().body_font_desc.c_str(), TR("Save short replay:"), get_color_theme().text_color));
+         auto save_replay_1_min_button = std::make_unique<Button>(get_theme().body_font_desc.c_str(), "", mgl::vec2f(0.0f, 0.0f), mgl::Color(0, 0, 0, 120));
+         save_replay_1_min_button_ptr = save_replay_1_min_button.get();
+         list->add_widget(std::move(save_replay_1_min_button));
+@@ -284,7 +300,7 @@ namespace gsr {
+     std::unique_ptr<List> GlobalSettingsPage::create_replay_partial_save_10min_hotkey_options() {
+         auto list = std::make_unique<List>(List::Orientation::HORIZONTAL, List::Alignment::CENTER);
+ 
+-        list->add_widget(std::make_unique<Label>(get_theme().body_font_desc.c_str(), TR("Save 10 minute replay:"), get_color_theme().text_color));
++        list->add_widget(std::make_unique<Label>(get_theme().body_font_desc.c_str(), TR("Save long replay:"), get_color_theme().text_color));
+         auto save_replay_10_min_button = std::make_unique<Button>(get_theme().body_font_desc.c_str(), "", mgl::vec2f(0.0f, 0.0f), mgl::Color(0, 0, 0, 120));
+         save_replay_10_min_button_ptr = save_replay_10_min_button.get();
+         list->add_widget(std::move(save_replay_10_min_button));
+@@ -471,6 +487,7 @@ namespace gsr {
+         list_ptr->add_widget(create_enable_keyboard_hotkeys_button());
+         list_ptr->add_widget(std::make_unique<LineSeparator>(LineSeparator::Orientation::HORIZONTAL, subsection->get_inner_size().x));
+         list_ptr->add_widget(create_show_hide_hotkey_options());
++        list_ptr->add_widget(create_layer_editor_hotkey_options());
+         list_ptr->add_widget(create_replay_on_off_hotkey_options());
+         list_ptr->add_widget(create_replay_save_hotkey_options());
+         list_ptr->add_widget(create_replay_partial_save_1min_hotkey_options());
+@@ -501,8 +518,8 @@ namespace gsr {
+         list_ptr->add_widget(create_joystick_hotkey_text(&get_theme().ps4_home_texture, &get_theme().ps4_dpad_down_texture, 2.0f*mgl::Text::get_font_size_from_font_description(get_theme().body_font_desc.c_str()), TR("to save a replay")));
+         list_ptr->add_widget(create_joystick_hotkey_text(&get_theme().ps4_home_texture, &get_theme().ps4_dpad_left_texture, 2.0f*mgl::Text::get_font_size_from_font_description(get_theme().body_font_desc.c_str()), TR("to start/stop recording")));
+         list_ptr->add_widget(create_joystick_hotkey_text(&get_theme().ps4_home_texture, &get_theme().ps4_dpad_right_texture, 2.0f*mgl::Text::get_font_size_from_font_description(get_theme().body_font_desc.c_str()), TR("to turn replay on/off")));
+-        list_ptr->add_widget(create_joystick_hotkey_text(&get_theme().ps4_home_texture, &get_theme().ps4_cross_texture, 2.0f*mgl::Text::get_font_size_from_font_description(get_theme().body_font_desc.c_str()), TR("to save a 1 minute replay")));
+-        list_ptr->add_widget(create_joystick_hotkey_text(&get_theme().ps4_home_texture, &get_theme().ps4_triangle_texture, 2.0f*mgl::Text::get_font_size_from_font_description(get_theme().body_font_desc.c_str()), TR("to save a 10 minute replay")));
++        list_ptr->add_widget(create_joystick_hotkey_text(&get_theme().ps4_home_texture, &get_theme().ps4_cross_texture, 2.0f*mgl::Text::get_font_size_from_font_description(get_theme().body_font_desc.c_str()), TR("to save a replay at the short duration")));
++        list_ptr->add_widget(create_joystick_hotkey_text(&get_theme().ps4_home_texture, &get_theme().ps4_triangle_texture, 2.0f*mgl::Text::get_font_size_from_font_description(get_theme().body_font_desc.c_str()), TR("to save a replay at the long duration")));
+         return subsection;
+     }
+ 
+@@ -710,6 +727,7 @@ namespace gsr {
+         take_screenshot_window_button_ptr->set_text(config.screenshot_config.take_screenshot_window_hotkey.to_string());
+ 
+         show_hide_button_ptr->set_text(config.main_config.show_hide_hotkey.to_string());
++        layer_editor_button_ptr->set_text(config.main_config.layer_editor_hotkey.to_string());
+     }
+ 
+     void GlobalSettingsPage::save() {
+@@ -800,6 +818,8 @@ namespace gsr {
+                 return take_screenshot_region_button_ptr;
+             case ConfigureHotkeyType::TAKE_SCREENSHOT_WINDOW:
+                 return take_screenshot_window_button_ptr;
++            case ConfigureHotkeyType::OPEN_LAYER_EDITOR:
++                return layer_editor_button_ptr;
+             case ConfigureHotkeyType::SHOW_HIDE:
+                 return show_hide_button_ptr;
+         }
+@@ -834,6 +854,8 @@ namespace gsr {
+                 return &config.screenshot_config.take_screenshot_region_hotkey;
+             case ConfigureHotkeyType::TAKE_SCREENSHOT_WINDOW:
+                 return &config.screenshot_config.take_screenshot_window_hotkey;
++            case ConfigureHotkeyType::OPEN_LAYER_EDITOR:
++                return &config.main_config.layer_editor_hotkey;
+             case ConfigureHotkeyType::SHOW_HIDE:
+                 return &config.main_config.show_hide_hotkey;
+         }
+@@ -854,7 +876,8 @@ namespace gsr {
+             &config.screenshot_config.take_screenshot_hotkey,
+             &config.screenshot_config.take_screenshot_region_hotkey,
+             &config.screenshot_config.take_screenshot_window_hotkey,
+-            &config.main_config.show_hide_hotkey
++            &config.main_config.show_hide_hotkey,
++            &config.main_config.layer_editor_hotkey
+         };
+         for(ConfigHotkey *config_hotkey : config_hotkeys) {
+             callback(config_hotkey);
+@@ -882,10 +905,10 @@ namespace gsr {
+                 hotkey_configure_action_name = TR("Save replay");
+                 break;
+             case ConfigureHotkeyType::REPLAY_SAVE_1_MIN:
+-                hotkey_configure_action_name = TR("Save 1 minute replay");
++                hotkey_configure_action_name = TR("Save short replay");
+                 break;
+             case ConfigureHotkeyType::REPLAY_SAVE_10_MIN:
+-                hotkey_configure_action_name = TR("Save 10 minute replay");
++                hotkey_configure_action_name = TR("Save long replay");
+                 break;
+             case ConfigureHotkeyType::RECORD_START_STOP:
+                 hotkey_configure_action_name = TR("Start/stop recording");
+@@ -918,6 +941,9 @@ namespace gsr {
+                     hotkey_configure_action_name = TR("Take a screenshot with desktop portal");
+                 break;
+             }
++            case ConfigureHotkeyType::OPEN_LAYER_EDITOR:
++                hotkey_configure_action_name = TR("Open Layer editor");
++                break;
+             case ConfigureHotkeyType::SHOW_HIDE:
+                 hotkey_configure_action_name = TR("Show/hide UI");
+                 break;
+diff --git a/src/gui/SettingsPage.cpp b/src/gui/SettingsPage.cpp
+index c0a3872..8244c68 100644
+--- a/src/gui/SettingsPage.cpp
++++ b/src/gui/SettingsPage.cpp
+@@ -1,3 +1,4 @@
++/* Modified by Layer on 2026-11-11: independent-source recording and native editor integration. */
+ #include "../../include/gui/SettingsPage.hpp"
+ #include "../../include/gui/GsrPage.hpp"
+ #include "../../include/gui/Label.hpp"
+@@ -1223,6 +1224,24 @@ namespace gsr {
+         return replay_time_list;
+     }
+ 
++    std::unique_ptr<List> SettingsPage::create_replay_save_duration(const char *label, int value, Entry **entry_out) {
++        auto list = std::make_unique<List>(List::Orientation::VERTICAL);
++        list->add_widget(std::make_unique<Label>(get_theme().body_font_desc.c_str(), label, get_color_theme().text_color));
++
++        auto entry = std::make_unique<Entry>(get_theme().body_font_desc.c_str(), std::to_string(value).c_str(), 2.0f*mgl::Text::get_font_size_from_font_description(get_theme().body_font_desc.c_str()) * 4);
++        entry->set_number_mode(true, 1, 86400);
++        *entry_out = entry.get();
++        list->add_widget(std::move(entry));
++        return list;
++    }
++
++    std::unique_ptr<List> SettingsPage::create_replay_save_durations() {
++        auto list = std::make_unique<List>(List::Orientation::VERTICAL);
++        list->add_widget(create_replay_save_duration(TR("Short save duration in seconds:"), config.replay_config.short_save_duration, &replay_short_save_duration_entry_ptr));
++        list->add_widget(create_replay_save_duration(TR("Long save duration in seconds:"), config.replay_config.long_save_duration, &replay_long_save_duration_entry_ptr));
++        return list;
++    }
++
+     std::unique_ptr<List> SettingsPage::create_replay_storage() {
+         auto list = std::make_unique<List>(List::Orientation::VERTICAL);
+         list->add_widget(std::make_unique<Label>(get_theme().body_font_desc.c_str(), TR("Where should temporary replay data be stored?"), get_color_theme().text_color));
+@@ -1399,6 +1418,7 @@ namespace gsr {
+         file_info_data_list->add_widget(create_save_directory(TR("Directory to save replays:")));
+         file_info_data_list->add_widget(create_container_section());
+         file_info_data_list->add_widget(create_replay_time());
++        file_info_data_list->add_widget(create_replay_save_durations());
+         file_info_list->add_widget(std::move(file_info_data_list));
+         file_info_list->add_widget(create_estimated_replay_file_size());
+         settings_list_ptr->add_widget(std::make_unique<Subsection>(TR("File info"), std::move(file_info_list), mgl::vec2f(settings_scrollable_page_ptr->get_inner_size().x, 0.0f)));
+@@ -1925,6 +1945,21 @@ namespace gsr {
+         if(config.replay_config.replay_time > 86400)
+             config.replay_config.replay_time = 86400;
+         replay_time_entry_ptr->set_text(std::to_string(config.replay_config.replay_time));
++
++        int32_t short_duration = config.replay_config.short_save_duration;
++        int32_t long_duration = config.replay_config.long_save_duration;
++        if(short_duration < 1)
++            short_duration = 1;
++        if(short_duration > config.replay_config.replay_time)
++            short_duration = config.replay_config.replay_time;
++        if(long_duration < 1)
++            long_duration = 1;
++        if(long_duration > config.replay_config.replay_time)
++            long_duration = config.replay_config.replay_time;
++        if(long_duration < short_duration)
++            long_duration = short_duration;
++        replay_short_save_duration_entry_ptr->set_text(std::to_string(short_duration));
++        replay_long_save_duration_entry_ptr->set_text(std::to_string(long_duration));
+     }
+ 
+     void SettingsPage::load_record() {
+@@ -2087,6 +2122,24 @@ namespace gsr {
+             config.replay_config.replay_time = 5;
+             replay_time_entry_ptr->set_text("5");
+         }
++
++        int32_t short_duration = sv_to_int<int32_t>(replay_short_save_duration_entry_ptr->get_text());
++        int32_t long_duration = sv_to_int<int32_t>(replay_long_save_duration_entry_ptr->get_text());
++        if(short_duration < 1)
++            short_duration = 1;
++        if(long_duration < 1)
++            long_duration = 1;
++        if(short_duration > config.replay_config.replay_time)
++            short_duration = config.replay_config.replay_time;
++        if(long_duration > config.replay_config.replay_time)
++            long_duration = config.replay_config.replay_time;
++        if(long_duration < short_duration)
++            long_duration = short_duration;
++
++        config.replay_config.short_save_duration = short_duration;
++        config.replay_config.long_save_duration = long_duration;
++        replay_short_save_duration_entry_ptr->set_text(std::to_string(short_duration));
++        replay_long_save_duration_entry_ptr->set_text(std::to_string(long_duration));
+     }
+ 
+     void SettingsPage::save_record() {
+diff --git a/src/main.cpp b/src/main.cpp
+index f9f6694..f69bf33 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -1,3 +1,4 @@
++/* Modified by Layer on 2026-11-11: independent-source recording and native editor integration. */
+ #include "../include/GsrInfo.hpp"
+ #include "../include/Overlay.hpp"
+ #include "../include/Utils.hpp"
+@@ -53,6 +54,7 @@ static void disable_prime_run() {
+ static void rpc_add_commands(gsr::Rpc *rpc, gsr::Overlay *overlay) {
+     const std::pair<const char*, std::function<void()>> commands[] = {
+         { "show_ui",                [overlay]() { overlay->show(); } },
++        { "show-recording-settings", [overlay]() { overlay->show(); overlay->open_replay_settings_page(); } },
+         { "toggle-show",            [overlay]() { overlay->toggle_show(); } },
+         { "toggle-record",          [overlay]() { overlay->toggle_record(gsr::RecordForceType::NONE); } },
+         { "start-record",           [overlay]() { overlay->start_record(); } },
+@@ -303,7 +305,7 @@ int main(int argc, char **argv) {
+         const int autostart_result = gsr::set_xdg_autostart(true);
+         if(autostart_result == 67) {
+             const bool is_flatpak = getenv("FLATPAK_ID") != nullptr;
+-            const char *startup_command = is_flatpak ? "flatpak run com.dec05eba.gpu_screen_recorder gsr-ui" : "gsr-ui launch-daemon";
++            const char *startup_command = is_flatpak ? "flatpak run io.github.miruas.Layer overlay" : "gsr-ui launch-daemon";
+             overlay->show_notification(
+                 TRF("GPU Screen Recorder UI autostart via systemd is deprecated. To migrate: install and configure 'dex' (recommended), or manually add '%s' to your desktop autostart entries.", startup_command).c_str(),
+                 10.0, mgl::Color(255, 255, 255), mgl::Color(255, 0, 0),
+diff --git a/tools/gsr-gnome-helper/main.cpp b/tools/gsr-gnome-helper/main.cpp
+index 693b987..a19d5ba 100644
+--- a/tools/gsr-gnome-helper/main.cpp
++++ b/tools/gsr-gnome-helper/main.cpp
+@@ -1,3 +1,4 @@
++/* Modified by Layer on 2026-11-11: independent-source recording and native editor integration. */
+ #include <dbus/dbus.h>
+ #include <unistd.h>
+ #include <stdlib.h>
+@@ -187,7 +188,7 @@ public:
+         const char *source_dir =
+             !inside_flatpak
+             ? GNOME_EXTENSION_SOURCE_DIR
+-            : "/var/lib/flatpak/app/com.dec05eba.gpu_screen_recorder/current/active/files/share/gsr-ui/gnome-extension";
++            : "/var/lib/flatpak/app/io.github.miruas.Layer/current/active/files/share/gsr-ui/gnome-extension";
+ 
+         const bool installed = inside_flatpak
+             ? install_extension_via_host(source_dir)
+diff --git a/tools/gsr-kwin-helper/main.cpp b/tools/gsr-kwin-helper/main.cpp
+index f41b2f9..2a9192f 100644
+--- a/tools/gsr-kwin-helper/main.cpp
++++ b/tools/gsr-kwin-helper/main.cpp
+@@ -1,3 +1,4 @@
++/* Modified by Layer on 2026-11-11: independent-source recording and native editor integration. */
+ #include <dbus/dbus.h>
+ #include <unistd.h>
+ #include <iostream>
+@@ -67,7 +68,7 @@ public:
+         const char *helper_path =
+             !inside_flatpak 
+             ? KWIN_HELPER_SCRIPT_PATH 
+-            : "/var/lib/flatpak/app/com.dec05eba.gpu_screen_recorder/current/active/files/share/gsr-ui/gsrkwinhelper.js";
++            : "/var/lib/flatpak/app/io.github.miruas.Layer/current/active/files/share/gsr-ui/gsrkwinhelper.js";
+ 
+         std::cerr << "Info: gsr-kwin-helper: KWin script path: " << helper_path << std::endl;
+ 
+diff --git a/tools/gsr-ui-cli/main.c b/tools/gsr-ui-cli/main.c
+index cfeb654..dbafdc3 100644
+--- a/tools/gsr-ui-cli/main.c
++++ b/tools/gsr-ui-cli/main.c
+@@ -1,3 +1,4 @@
++/* Modified by Layer on 2026-11-11: independent-source recording and native editor integration. */
+ #include <limits.h>
+ #include <stdio.h>
+ #include <stddef.h>
+@@ -90,9 +91,9 @@ static void usage(void) {
+     printf("  replay-save\n");
+     printf("      Save replay.\n");
+     printf("  replay-save-1-min\n");
+-    printf("      Save 1 minute replay.\n");
++    printf("      Save a replay at the configured short duration.\n");
+     printf("  replay-save-10-min\n");
+-    printf("      Save 10 minute replay.\n");
++    printf("      Save a replay at the configured long duration.\n");
+     printf("  take-screenshot\n");
+     printf("      Take a screenshot.\n");
+     printf("  take-screenshot-region\n");

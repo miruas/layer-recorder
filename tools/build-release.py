@@ -25,7 +25,7 @@ def main():
     if payload.exists():shutil.rmtree(payload)
     app=payload/'usr/lib/layer-recorder';app.mkdir(parents=True)
     shutil.copytree(ROOT/'katman',app/'katman',ignore=shutil.ignore_patterns('__pycache__','*.pyc'));shutil.copy2(ROOT/'run.sh',app/'run.sh')
-    for binary in ('gpu-screen-recorder','gsr-cli','layer-recorderd'):
+    for binary in ('gpu-screen-recorder','gsr-cli','layer-recorderd','layer-studio'):
         file=ROOT/'bin'/binary
         if not file.is_file():parser.error('Build native component first: '+binary)
         (app/'bin').mkdir(exist_ok=True);shutil.copy2(file,app/'bin'/binary)
@@ -38,7 +38,11 @@ def main():
     license_dir=payload/'usr/share/licenses/layer-recorder';license_dir.mkdir(parents=True)
     for name in ('LICENSE','NOTICE.md','UPSTREAM.md'):shutil.copy2(ROOT/name,license_dir/name)
     shutil.copytree(ROOT/'licenses',license_dir/'components')
-    metadata=json.loads(subprocess.check_output(['cargo','metadata','--locked','--format-version','1','--manifest-path',str(ROOT/'native/recorder/Cargo.toml')],text=True))
+    packages={}
+    for component in ('recorder','editor'):
+        metadata=json.loads(subprocess.check_output(['cargo','metadata','--locked','--format-version','1','--manifest-path',str(ROOT/'native'/component/'Cargo.toml')],text=True))
+        for package in metadata['packages']:packages[package['id']]=package
+    metadata={'packages':list(packages.values())}
     for package in metadata['packages']:
         if not package.get('source'):continue
         source=Path(package['manifest_path']).parent;dest=license_dir/'rust'/(package['name']+'-'+package['version']);dest.mkdir(parents=True,exist_ok=True)
@@ -55,11 +59,11 @@ def main():
         file=payload/name;file.parent.mkdir(parents=True,exist_ok=True);file.write_text(text);file.chmod(mode)
     write('usr/bin/layer','#!/bin/sh\nexport PYTHONPATH=/usr/lib/layer-recorder${PYTHONPATH:+:$PYTHONPATH}\nexec /usr/bin/python3 -m katman "$@"\n',0o755)
     write('usr/bin/layer-download-model','#!/bin/sh\nexport PYTHONPATH=/usr/lib/layer-recorder${PYTHONPATH:+:$PYTHONPATH}\nexec /usr/bin/python3 /usr/lib/layer-recorder/tools/download-model.py "$@"\n',0o755)
-    write('usr/share/applications/katman.desktop','[Desktop Entry]\nType=Application\nName=Layer\nComment=Independent recording and editing\nExec=layer ui %f\nIcon=/usr/lib/layer-recorder/katman/assets/katman.svg\nTerminal=false\nCategories=AudioVideo;Recorder;Video;\nMimeType=application/x-katman-project;\nStartupWMClass=katman\n')
+    write('usr/share/applications/katman.desktop','[Desktop Entry]\nType=Application\nName=Layer\nComment=Independent recording and editing\nExec=layer ui %f\nIcon=/usr/lib/layer-recorder/katman/assets/katman.svg\nTerminal=false\nCategories=AudioVideo;Recorder;Video;\nMimeType=application/x-katman-project;\nStartupWMClass=layer-recorder\n')
     write('usr/share/mime/packages/katman.xml','<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info"><mime-type type="application/x-katman-project"><comment>Layer recording project</comment><glob pattern="*.katman"/></mime-type></mime-info>\n')
     write('usr/lib/systemd/user/katman.service','[Unit]\nDescription=Layer recording service\nAfter=graphical-session.target\nPartOf=graphical-session.target\nRequisite=graphical-session.target\n\n[Service]\nEnvironment=PYTHONPATH=/usr/lib/layer-recorder\nExecStart=/usr/lib/layer-recorder/bin/layer-recorderd --root /usr/lib/layer-recorder\nWorkingDirectory=/usr/lib/layer-recorder\nRestart=on-failure\nRestartSec=3\nTimeoutStopSec=120\n\n[Install]\nWantedBy=graphical-session.target\n')
     # Never install host preferences or start captures as a package side effect.
-    dependencies=['python>=3.12','pyside6','qt6-multimedia','qt6-svg','qt6-wayland','python-numpy','python-opencv','ffmpeg','gpu-screen-recorder','pipewire','libpulse','fontconfig','noto-fonts','libnotify','libglvnd','libva','libdrm','libx11','libxrandr','libxfixes','libxdamage','libxcomposite','libxi','libxcursor','dbus','pango','libdecor']
+    dependencies=['python>=3.12','python-pillow','zenity','python-numpy','python-opencv','ffmpeg','gpu-screen-recorder','pipewire','libpulse','fontconfig','noto-fonts','libnotify','libglvnd','libva','libdrm','libx11','libxrandr','libxfixes','libxdamage','libxcomposite','libxi','libxcursor','dbus','pango','libdecor']
     sonames=set()
     for file in app.rglob('*'):
         if not file.is_file() or file.read_bytes()[:4]!=b'\x7fELF':continue
@@ -95,10 +99,11 @@ package() {{ cp -a "$startdir/payload/." "$pkgdir/"; }}
         if source.exists():copy_tree(source,sources/'external'/component)
         elif component=='whisper' and args.speech_binary:parser.error('Include the exact speech source checkout when distributing its executable.')
     # Rust dependencies are statically linked: ship their exact sources and original license texts.
-    vendor=work/'rust-vendor';shutil.rmtree(vendor,ignore_errors=True)
-    run(['cargo','vendor','--locked','--manifest-path',ROOT/'native/recorder/Cargo.toml',vendor],stdout=subprocess.DEVNULL)
-    crate=sources/'layer-recorder/native/recorder';shutil.copytree(vendor,crate/'vendor')
-    (crate/'.cargo').mkdir(exist_ok=True);(crate/'.cargo/config.toml').write_text('[source.crates-io]\nreplace-with = "vendored-sources"\n[source.vendored-sources]\ndirectory = "vendor"\n')
+    for component in ('recorder','editor'):
+        vendor=work/('rust-vendor-'+component);shutil.rmtree(vendor,ignore_errors=True)
+        run(['cargo','vendor','--locked','--manifest-path',ROOT/'native'/component/'Cargo.toml',vendor],stdout=subprocess.DEVNULL)
+        crate=sources/'layer-recorder/native'/component;shutil.copytree(vendor,crate/'vendor')
+        (crate/'.cargo').mkdir(exist_ok=True);(crate/'.cargo/config.toml').write_text('[source.crates-io]\nreplace-with = "vendored-sources"\n[source.vendored-sources]\ndirectory = "vendor"\n')
     archive=out/f'layer-recorder-{version}-corresponding-sources.tar.gz'
     with tarfile.open(archive,'w:gz') as tar:tar.add(sources,arcname=f'layer-recorder-{version}-sources')
     package=out/f'layer-recorder-{version}-1-x86_64.pkg.tar.zst'

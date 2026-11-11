@@ -15,7 +15,9 @@ def cli():
     return str(local) if local.is_file() else shutil.which('gsr-ui-cli')
 
 
-def config_path():return CONFIG.parent/'gpu-screen-recorder/config_ui'
+def config_path():
+    from .gsr_preferences import config_path as canonical
+    return canonical()
 def read():
     file=config_path()
     if not file.exists():return None

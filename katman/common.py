@@ -31,9 +31,22 @@ def atomic_json(path, value):
 SETTINGS_FILE=Path(os.environ.get('LAYER_CONFIG',CONFIG/'settings.json')).expanduser()
 
 
-def settings():
+def settings(mode='replay'):
+    """Load Layer settings merged with read-only canonical GSR preferences.
+
+    GSR is the default source; set ``gsr_preferences`` to false in Layer's
+    settings to opt out.  ``LAYER_GSR_CONFIG`` (or the ``gsr_config`` setting)
+    selects one explicit GSR ``config_ui`` file.  Nothing is ever written.
+    """
     from .configuration import load_settings
-    return load_settings(SETTINGS_FILE)
+    from .gsr_preferences import config_path, effective_settings, read_gsr_preferences
+    layer = load_settings(SETTINGS_FILE)
+    if not layer['gsr_preferences'] or layer['gsr_source'] in ('layer','off'):
+        return layer
+    import os
+    override = os.environ.get('LAYER_GSR_CONFIG') or layer['gsr_config']
+    gsr_file = Path(override).expanduser() if override else config_path()
+    return effective_settings(layer, read_gsr_preferences(gsr_file), mode)
 
 
 def request(action, **data):

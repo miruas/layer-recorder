@@ -4,24 +4,38 @@ on:
   pull_request:
 permissions:
   contents: read
+concurrency:
+  group: layer-ci-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
 jobs:
   native:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
       - name: Install media test runtime
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libxkbcommon-dev libxkbcommon-x11-0 libgl1-mesa-dri dbus-x11 fonts-noto-core libwayland-dev libudev-dev libfontconfig-dev libdbus-1-dev libegl1-mesa-dev libx11-dev xvfb xauth
       - name: Build and test Rust core
         run: |
           rustup toolchain install stable --profile minimal
           rustup override set stable
           cargo test --locked --manifest-path native/recorder/Cargo.toml
           python3 tools/build-native.py recorder
+          cargo test --locked --manifest-path native/editor/Cargo.toml
+          python3 tools/build-native.py editor
+      - name: Native interface startup and close regressions
+        run: dbus-run-session -- xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1 python3 tools/smoke-ui.py
+      - name: Preserve startup diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-startup-diagnostics
+          path: build/ui-smoke/
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v6
         with:
-          name: rust-core
-          path: bin/layer-recorderd
+          name: native-runtime
+          path: bin/
   tests:
     needs: native
     runs-on: ubuntu-24.04
@@ -30,7 +44,6 @@ jobs:
       matrix:
         python: ['3.12', '3.13', '3.14']
     env:
-      QT_QPA_PLATFORM: offscreen
       XDG_CONFIG_HOME: /tmp/layer-ci-config
       XDG_CACHE_HOME: /tmp/layer-ci-cache
       XDG_RUNTIME_DIR: /tmp/layer-ci-runtime
@@ -41,7 +54,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
-      - name: Install media and Qt runtime dependencies
+      - name: Install media runtime dependencies
         run: |
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends ffmpeg fonts-noto-core libegl1 libopengl0 libxcb-cursor0
@@ -51,7 +64,7 @@ jobs:
         run: python -m pip install . build
       - uses: actions/download-artifact@v7
         with:
-          name: rust-core
+          name: native-runtime
           path: bin
       - run: chmod +x bin/layer-recorderd
       - name: Audit public source tree
@@ -65,7 +78,5 @@ jobs:
         run: |
           python -m compileall -q katman tools install.py
           python -m unittest discover -s tests -v
-      - name: Native interface smoke test
-        run: python tools/smoke-ui.py
       - name: Build source and wheel packages
         run: python -m build

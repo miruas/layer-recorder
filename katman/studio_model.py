@@ -165,7 +165,7 @@ def from_project(project):
 
 def validate(model,project,allow_empty=False):
     ids={s['id'] for s in project['sources']}
-    if not (2<=model['width']<=16384 and 2<=model['height']<=16384 and 1<=model['fps']<=120):raise ValueError('Invalid canvas dimensions or frame rate.')
+    if not (2<=model['width']<=16384 and 2<=model['height']<=16384 and 1<=model['fps']<=240):raise ValueError('Invalid canvas dimensions or frame rate.')
     for track in model['tracks']:
         for c in track['clips']:
             if c['source_id'] not in ids or c['start']<0 or c['in']<0 or c.get('length',0)<=0 or not .25<=c.get('speed',1)<=4:raise ValueError('Check clip timing and source media.')

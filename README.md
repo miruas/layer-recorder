@@ -4,7 +4,7 @@ A **GPL-3.0-only source fork of GPU Screen Recorder**, with a native independent
 
 Layer is a native Linux recorder and independent-track video editor. Capture displays and application audio separately, keep the last minute or five minutes in RAM, then decide which screens and sounds belong in the final video.
 
-Layer supports NVIDIA NVENC and AMD/Intel VA-API paths. It is a PySide6 desktop application, not a browser interface. Capture now uses a **Rust GSR-only core**. GSR discovers the sources; Hyprland geometry, application naming and shortcuts are optional adapters. Other desktop/session paths have explicit verification limits in the [compatibility matrix](docs/GSR_COMPATIBILITY.md).
+Layer supports NVIDIA NVENC and AMD/Intel VA-API paths. The library and editor share one native Rust window; no browser or Qt runtime is required. A **Rust GSR-only core** supervises capture. GSR discovers sources; Hyprland, Sway and X11 metadata are optional adapters. Other desktop/session paths have explicit verification limits in the [compatibility matrix](docs/GSR_COMPATIBILITY.md).
 
 [GSR features, Layer gaps and Hyprland separation](docs/GSR_COMPATIBILITY.md)
 
@@ -37,6 +37,11 @@ See [GPU support and driver setup](docs/GPU_SUPPORT.md) for profiles, limitation
 
 ## Download and install
 
+For the portable 0.8 packaging path, use the [Flatpak build and installation guide](docs/FLATPAK.md). It bundles one Freedesktop runtime for Debian, Ubuntu, Fedora, openSUSE, Arch and other Flatpak-capable Linux distributions, rather than sharing distribution-specific Python/FFmpeg ABIs. Physical capture still follows GSR's driver and permission requirements. See the [portability audit](docs/PORTABILITY_AUDIT.md) for tested and pending coverage.
+
+The 0.8 portable preview is published separately from the latest stable 0.7 Arch/CachyOS package. See [all releases](https://github.com/miruas/layer-recorder/releases) and the validation limits before choosing a preview.
+
+
 [**Download the ready-to-install release**](https://github.com/miruas/layer-recorder/releases/latest) for **Arch / CachyOS x86_64**. One package supports NVIDIA, AMD and Intel, subject to GPU/driver capabilities. It includes compiled capture helpers, the patched GSR overlay and offline subtitle engine. No compilation is required for the package; install the required vendor drivers and system GSR KMS broker first.
 
 ```sh
@@ -46,11 +51,11 @@ layer ui
 
 [Package installation and checksum verification](docs/INSTALLATION.md) · [Build from source](docs/BUILDING.md) · [Release history](https://github.com/miruas/layer-recorder/releases)
 
-Native **Settings** provides H.264 / H.265 / AV1 selection, export encoder, RAM replay duration, both save presets, editable Layer shortcuts and shared GSR shortcuts/preferences. Changes preserve unrelated GSR configuration.
+The **Recording settings** button opens the bundled normal GSR replay settings. GSR owns codec, capture quality, frame rate, replay durations and shared shortcuts. The patched GSR global settings also provide **Open Layer editor**, default Meta+Alt+Z. Unrelated GSR preferences are preserved.
 
 ## Source quick start
 
-Use a current Arch-based system with Python 3.12+, PipeWire, FFmpeg and GPU Screen Recorder. Capture helpers target current FFmpeg APIs; see [installation](docs/INSTALLATION.md) for exact dependencies and other distributions.
+For a distribution-independent build, follow the Flatpak guide. Native source builds need Python 3.12+, stable Rust, FFmpeg and GSR development libraries. PipeWire enables independent application roles; PulseAudio device capture is available without it. Capture helpers target current FFmpeg APIs; see [installation](docs/INSTALLATION.md) for exact dependencies and other distributions.
 
 ```sh
 git clone https://github.com/miruas/layer-recorder.git
@@ -60,6 +65,7 @@ python3 -m venv .venv
 python -m pip install -e . meson ninja
 python tools/build-native.py gpu-screen-recorder
 python tools/build-native.py recorder
+python tools/build-native.py editor
 python install.py --profile auto --enable
 ```
 
@@ -95,11 +101,11 @@ layer config validate
 layer config init --profile amd
 ```
 
-`LAYER_CONFIG` selects an alternate settings file. Use the native Settings dialog for common capture preferences. Changes apply when the capture engine next starts; save active captures before restarting it.
+`LAYER_CONFIG` selects an alternate settings file. Use normal GSR settings for common capture preferences; `LAYER_GSR_CONFIG` selects its shared configuration file and `gsr_preferences: false` opts out. Changes apply when the capture engine next starts; save active captures before restarting it.
 
 ## Recording, editing and shortcuts
 
-Enable replay, record normally, or use the optional desktop bindings. Select a saved recording in the library to enter Studio. Toggle tracks to exclude a screen or sound, then export an ordinary video file.
+Enable replay, record normally, or use the optional desktop bindings. Select a saved recording in the library to edit it in the same window. Toggle tracks to exclude a screen or sound, then export an ordinary video file.
 
 [Recording and editor guide](docs/USAGE.md) · [Optional GSR menu and hotkey integration](docs/INTEGRATION.md) · [Suggested Hyprland bindings](examples/hyprland.conf)
 
@@ -117,7 +123,7 @@ Window titles are not used for application folder names. Speech recognition runs
 
 ```sh
 python -m unittest discover -s tests -v
-QT_QPA_PLATFORM=offscreen python tools/smoke-ui.py
+xvfb-run -a python tools/smoke-ui.py
 python tools/check-public-tree.py
 ```
 

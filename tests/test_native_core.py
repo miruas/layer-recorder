@@ -21,7 +21,7 @@ if '--list-monitors' in args:print('QA-1|64x64');raise SystemExit
 output=args[args.index('-o')+1];options=args[args.index('-ffmpeg-opts')+1];listing=next(x.split('=',1)[1] for x in options.split(';') if x.startswith('segment_list='))
 Path(output+'.ts').write_text('CLOCK_MONOTONIC\\n'+str(int(time.monotonic()*1e6))+'\\n')
 # Test-only source: encode generated pixels on CPU; never read a display/device.
-os.execvp('ffmpeg',['ffmpeg','-hide_banner','-loglevel','error','-y','-re','-f','lavfi','-i','color=blue:s=64x64:r=10','-c:v','libx264','-preset','ultrafast','-g','10','-f','segment','-segment_time','2','-segment_list',listing,'-segment_list_type','csv','-reset_timestamps','1',output])
+os.execvp('ffmpeg',['ffmpeg','-hide_banner','-loglevel','error','-y','-re','-f','lavfi','-i','color=blue:s=64x64:r=10','-c:v','libx264','-preset','ultrafast','-tune','zerolatency','-threads','1','-g','10','-f','segment','-segment_time','2','-segment_format_options','cluster_time_limit=250:flush_packets=1','-segment_list',listing,'-segment_list_type','csv','-reset_timestamps','1',output])
 ''');gsr.chmod(0o755)
         cfg=profile('nvidia');cfg.update(library=str(self.library),gsr_binary=str(gsr),shortcuts_enabled=False)
         config=self.root/'settings.json';config.write_text(json.dumps(cfg));env=os.environ.copy();env.update(PATH=str(tools)+os.pathsep+env['PATH'],XDG_RUNTIME_DIR=str(runtime),XDG_CACHE_HOME=str(self.root/'cache'),XDG_CONFIG_HOME=str(self.root/'config'),LAYER_CONFIG=str(config));env.pop('HYPRLAND_INSTANCE_SIGNATURE',None)
@@ -53,6 +53,17 @@ os.execvp('ffmpeg',['ffmpeg','-hide_banner','-loglevel','error','-y','-re','-f',
     def project(self,path):
         p=Path(path);v=json.loads(p.read_text());self.assertEqual(v['format'],'katman');self.assertEqual(v['version'],1);self.assertEqual(v['warnings'],[]);self.assertEqual(v['sources'][0]['width'],64)
         source=v['sources'][0];media=p.parent/source['file'];self.assertTrue(media.is_file());self.assertTrue(media.resolve().is_relative_to(p.parent.resolve()));return p,v
+    def test_capture_can_start_without_pipewire_application_support(self):
+        program = self.root / 'tools/synthetic-gsr'
+        source = program.read_text().replace('supports_app_audio|yes', 'supports_app_audio|no')
+        source = source.replace("if '--list-monitors' in args:", "if '--list-audio-devices' in args:raise SystemExit\nif '--list-monitors' in args:")
+        program.write_text(source)
+        status = self.call('toggle-replay')
+        self.assertTrue(status['running'])
+        self.assertEqual(status['audio_mode'], 'none')
+        self.assertTrue(status['warnings'])
+        self.assertEqual([s['type'] for s in status['sources']], ['video'])
+
     def test_wire_validation_and_shared_record_replay_lifecycle(self):
         self.assertEqual(stat.S_IMODE(self.endpoint.stat().st_mode),0o600)
         for message in [{'action':'invalid'},{'action':'set-capture-state','kind':'record','enabled':'false'},{'action':'save-replay','seconds':True}]:self.assertFalse(self.raw(message)['ok'])

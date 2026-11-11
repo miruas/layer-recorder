@@ -29,7 +29,9 @@ pub struct Recorder {
     archive: Option<PathBuf>,
     cache: PathBuf,
     platform: Platform,
-    monitor: Monitor,
+    monitor: Option<Monitor>,
+    audio_mode: String,
+    warnings: Vec<String>,
     config: Value,
     program: String,
     revision: u64,
@@ -41,7 +43,6 @@ impl Recorder {
     pub fn new(root: &Path, cache: PathBuf) -> Result<Self> {
         let mut platform = Platform::new(root)?;
         let config = platform.call("settings")?;
-        let monitor = Monitor::new()?;
         Ok(Self {
             running: false,
             replay: false,
@@ -55,7 +56,9 @@ impl Recorder {
             archive: None,
             cache,
             platform,
-            monitor,
+            monitor: None,
+            audio_mode: "none".into(),
+            warnings: vec![],
             config,
             program: String::new(),
             revision: u64::MAX,
@@ -84,9 +87,9 @@ impl Recorder {
                 meta
             })
             .collect();
-        json!({"engine":"rust-gsr","protocol_version":1,"running":self.running,"replay":self.replay,"recording":self.record_start.is_some(),"buffer_storage":"ram","buffer_directory":self.root,"buffer_seconds":elapsed.min(self.buffer_limit).max(0.),"record_seconds":self.record_start.map(|start|(elapsed-start).max(0.)).unwrap_or(0.),"sources":sources,"errors":self.errors.iter().rev().take(10).rev().collect::<Vec<_>>(),"last_project":self.last_project,"cache_bytes":self.tracks.iter().map(Track::cache_bytes).sum::<u64>(),"shortcut_error":self.identity["shortcut_error"],"integrations":self.identity["integrations"]})
+        json!({"engine":"rust-gsr","protocol_version":1,"running":self.running,"replay":self.replay,"recording":self.record_start.is_some(),"buffer_storage":"ram","buffer_directory":self.root,"buffer_seconds":elapsed.min(self.buffer_limit).max(0.),"record_seconds":self.record_start.map(|start|(elapsed-start).max(0.)).unwrap_or(0.),"sources":sources,"audio_mode":self.audio_mode,"warnings":self.warnings,"errors":self.errors.iter().rev().take(10).rev().collect::<Vec<_>>(),"last_project":self.last_project,"cache_bytes":self.tracks.iter().map(Track::cache_bytes).sum::<u64>(),"shortcut_error":self.identity["shortcut_error"],"integrations":self.identity["integrations"]})
     }
-    fn error(&mut self, error: String) {
+    pub(crate) fn error(&mut self, error: String) {
         if self.errors.last() != Some(&error) {
             self.errors.push(error);
         }
@@ -103,15 +106,18 @@ impl Recorder {
             self.last_identity = now();
         }
     }
-    pub fn start(&mut self) -> Result<()> {
+    pub fn start(&mut self, mode: &str) -> Result<()> {
         if self.running {
             return Ok(());
         }
-        let plan = self.platform.call("plan")?;
+        let plan = self.platform.call(if mode == "record" { "plan-record" } else { "plan" })?;
         self.config = plan["config"].clone();
         self.program = plan["program"].as_str().context("GSR program")?.into();
         self.buffer_limit = self.config["buffer"].as_f64().context("Buffer duration")?;
         self.errors.clear();
+        self.audio_mode = plan["audio_mode"].as_str().unwrap_or("pipewire").into();
+        self.warnings = plan["warnings"].as_array().map(|items| items.iter().filter_map(|v|v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+        self.monitor = if self.audio_mode == "pipewire" { Some(Monitor::new()?) } else { None };
         self.tracks.clear();
         self.last_spawn.clear();
         self.root = Some(buffer_storage::create()?);
@@ -133,14 +139,19 @@ impl Recorder {
                     .iter()
                     .map(|v| v.as_str().unwrap_or("").to_string())
                     .collect();
-                self.tracks.push(Track::spawn(
+                let mut track = Track::spawn(
                     self.root.as_ref().unwrap(),
                     self.origin,
                     p["key"].as_str().context("Track key")?.into(),
                     p["meta"].clone(),
                     &command,
-                    String::new(),
-                )?);
+                    p["selector"].as_str().unwrap_or("").into(),
+                )?;
+                if track.meta["type"] == "audio" {
+                    interval(&mut track.activity, true, track.offset);
+                    interval(&mut track.presence, true, track.offset);
+                }
+                self.tracks.push(track);
             }
             if self.tracks.is_empty() {
                 bail!("No GSR sources were selected.");
@@ -153,12 +164,12 @@ impl Recorder {
             };
             let deadline = now() + timeout;
             loop {
-                for t in &mut self.tracks {
+                for t in self.tracks.iter_mut().filter(|t| t.meta["type"] == "video") {
                     if !t.alive() {
                         bail!("{}", t.error());
                     }
                 }
-                if self.tracks.iter().all(|t| {
+                if self.tracks.iter().filter(|t|t.meta["type"] == "video").all(|t| {
                     t.path.join("%08d.mkv.ts").exists() && t.path.join("00000000.mkv").exists()
                 }) {
                     break;
@@ -184,8 +195,9 @@ impl Recorder {
         Ok(())
     }
     fn discover_audio(&mut self) -> Result<()> {
+        let Some(monitor) = &self.monitor else { return Ok(()); };
         let (groups, revision, error) = {
-            let graph = self.monitor.state.lock().unwrap();
+            let graph = monitor.state.lock().unwrap();
             (
                 audio::groups(&graph.nodes),
                 graph.revision,
@@ -335,14 +347,14 @@ impl Recorder {
                 self.stop(true)?;
             }
         } else {
-            self.start()?;
+            self.start("replay")?;
             self.replay = true;
         }
         Ok(self.status())
     }
     pub fn toggle_record(&mut self) -> Result<Value> {
         if self.record_start.is_none() {
-            self.start()?;
+            self.start("record")?;
             self.record_start = Some(now() - self.origin);
             return Ok(self.status());
         }
@@ -380,7 +392,7 @@ impl Recorder {
             self.replay = false;
         }
         if replay {
-            self.start()?;
+            self.start("replay")?;
             self.replay = true;
         }
         let mut status = self.status();
@@ -420,6 +432,7 @@ impl Recorder {
             }
         }
         self.running = false;
+        self.monitor = None;
         if clean {
             self.cleanup();
         }
@@ -483,7 +496,7 @@ impl Recorder {
         fs::create_dir_all(folder.join("media"))?;
         let staging = folder.join(".staging");
         fs::create_dir(&staging)?;
-        let mut project = json!({"format":"katman","version":1,"id":util::id(),"name":application,"application":application,"kind":kind,"created":chrono::Local::now().to_rfc3339(),"duration":end-start,"sources":[],"sections":[],"warnings":self.errors});
+        let mut project = json!({"format":"katman","version":1,"id":util::id(),"name":application,"application":application,"kind":kind,"created":chrono::Local::now().to_rfc3339(),"duration":end-start,"sources":[],"sections":[],"warnings":self.errors.iter().chain(self.warnings.iter()).collect::<Vec<_>>()});
         for track in &mut self.tracks {
             if !track.active_in(start, end) {
                 continue;

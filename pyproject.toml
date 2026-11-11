@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "layer-recorder"
-version = "0.7.0"
+version = "0.8.0"
 description = "Native Linux RAM replay recorder and independent-track editor for NVIDIA, AMD and Intel"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "GPL-3.0-only"
 license-files = ["LICENSE", "licenses/*"]
-dependencies = ["PySide6>=6.6,<7", "numpy>=1.26", "opencv-python-headless>=4.9,<5"]
+dependencies = ["Pillow>=10,<13", "numpy>=1.26", "opencv-python-headless>=4.9,<5"]
 classifiers = ["Operating System :: POSIX :: Linux", "Topic :: Multimedia :: Video :: Capture", "Programming Language :: Python :: 3"]
 
 [project.scripts]

@@ -3,7 +3,7 @@
 import json,sys,os
 from .common import APP,settings
 from .hardware import gsr_program,gsr_info,capture_command
-from .platform_capture import displays,hyprland_available
+from .platform_capture import displays,hyprland_available,desktop_integrations
 from .identity import focused_application
 
 def main():
@@ -16,17 +16,20 @@ def main():
             try:
                 request=json.loads(raw);op=request['op']
                 if op=='settings':data=settings()
-                elif op=='plan':
-                    cfg=settings();program=gsr_program(cfg);info=gsr_info(program)
+                elif op in ('plan','plan-record'):
+                    cfg=settings('record' if op=='plan-record' else 'replay');program=gsr_program(cfg);info=gsr_info(program)
                     if info.get('layer_audio_node_selector')!='yes':raise RuntimeError('This capture engine needs the Layer GSR fork with independent audio-node support. Rebuild gpu-screen-recorder with tools/build-native.py.')
-                    if info.get('supports_app_audio')!='yes':raise RuntimeError('GSR cannot connect to PipeWire application audio. Check the PipeWire PulseAudio service and PULSE_SERVER before capture.')
+                    if info.get('layer_segment_muxer')=='no':raise RuntimeError('The GSR build lacks the FFmpeg segment muxer required for Layer replay. Rebuild the complete Layer package.')
                     items=displays(program,cfg['capture_targets']);direct={m['name'] for m in items}
                     plans=[]
                     for item in items:
                         command,backend=capture_command(item,cfg,direct,info,None)
                         plans.append({'key':'display:'+item['name'],'meta':{'type':'video',**item,'backend':backend},'command':command})
-                    data={'config':cfg,'program':program,'capabilities':info,'tracks':plans}
-                elif op=='identity':data={'application':focused_application(),'shortcut_error':watcher.error if watcher else '', 'integrations':{'geometry':'hyprland' if hyprland_available() else 'synthetic','shortcuts':'hyprland' if watcher else 'external','identity':'hyprland' if hyprland_available() else 'desktop'}}
+                    from .audio_plan import audio_plan
+                    audio=audio_plan(program,info)
+                    plans.extend(audio['tracks'])
+                    data={'config':cfg,'program':program,'capabilities':info,'tracks':plans,'audio_mode':audio['mode'],'warnings':audio['warnings']}
+                elif op=='identity':data={'application':focused_application(),'shortcut_error':watcher.error if watcher else '', 'integrations':desktop_integrations()}
                 else:raise ValueError('Unknown platform operation.')
                 reply={'ok':True,'data':data}
             except Exception as e:reply={'ok':False,'error':str(e)}
