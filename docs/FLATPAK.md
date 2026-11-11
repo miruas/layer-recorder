@@ -83,7 +83,8 @@ the build itself.
 Both Rust executables use locked Cargo dependencies. The recorder uses its
 minimal static FFmpeg stack; the editor includes a separate full FFmpeg CLI with
 PNG previews, text/subtitles, stabilization, software codecs and supported hardware encoders. The renderer build verifies these capabilities before packaging. Pillow and
-NumPy have pinned wheels. OpenCV is built from pinned source without its own
+NumPy are built from verified pinned source distributions against SDK libraries.
+NumPy has a generic CPU baseline and no external BLAS/Fortran payload. OpenCV is built from pinned source without its own
 FFmpeg decoder. The package also contains the speech executable and an explicit
 model-download command; speech weights are downloaded to the user's cache only
 when requested with `layer download-model`.

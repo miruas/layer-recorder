@@ -174,7 +174,7 @@ def check_static(args: argparse.Namespace) -> None:
     log("sdk extensions: " + ", ".join(args.sdk_extensions))
     log(f"target architecture: {args.arch}")
     log(f"permissions: {len(permissions)} finish arguments")
-    log(f"Python wheels: {', '.join(requirements)}")
+    log(f"Python source packages: {', '.join(requirements)}")
     log("static checks passed")
 
 
@@ -404,6 +404,7 @@ def build_script(args: argparse.Namespace, paths: dict[str, Path | str], version
         "export PIP_DISABLE_PIP_VERSION_CHECK=1",
         "export CARGO_TERM_COLOR=never",
         f"export SOURCE_DATE_EPOCH={epoch}",
+        f"export LAYER_SDK_COMMIT={q(output(["flatpak","info","--show-commit","--arch",args.arch,f"{args.sdk}//{args.runtime_version}"]))}",
         f"LAYER_SRC={q(SANDBOX_ROOT)}",
         f"LAYER_APP_ID={q(args.app_id)}",
         f"LAYER_VERSION={q(version)}",
@@ -484,12 +485,9 @@ def build_script(args: argparse.Namespace, paths: dict[str, Path | str], version
         "export LAYER_GSR_STACK=\"$LAYER_GSR_BUILD/subprojects/ffmpeg-9.0/install\"",
         "python3 \"$LAYER_SRC/tools/build-flatpak-renderer.py\"",
         "",
-        "# Headless imaging dependencies live in a private target directory so",
-        "# the launcher can put the application root and this directory on PYTHONPATH.",
-        "python3 -m pip install --disable-pip-version-check --no-compile --no-warn-script-location \\",
-        "    --only-binary=:all: --cache-dir \"$LAYER_PIP_CACHE\" \\",
-        "    --target \"$LAYER_STAGE/python\" --requirement \"$LAYER_SRC/packaging/flatpak/requirements.txt\"",
-        "",
+        "# Build pinned Python runtime packages against the SDK. Do not carry",
+        "# opaque wheel codec/BLAS stacks or a stricter CPU baseline.",
+        "python3 \"$LAYER_SRC/tools/build-flatpak-python.py\"",
         "python3 \"$LAYER_SRC/tools/build-flatpak-opencv.py\"",
         "cp -a \"$LAYER_SRC/katman/.\" \"$LAYER_STAGE/katman/\"",
         "find \"$LAYER_STAGE/katman\" -type d -name __pycache__ -prune -exec rm -rf {} +",
@@ -637,7 +635,8 @@ def stage_static(args: argparse.Namespace, paths: dict[str, Path | str], version
         "dirty": bool(git("status", "--porcelain")),
         "gpu_screen_recorder": json.loads((ROOT / "packaging/native-lock.json").read_text())["gpu-screen-recorder"],
         "gsr_ui": json.loads((ROOT / "packaging/native-lock.json").read_text())["gsr-ui"],
-        "python_wheels": read_requirements(),
+        "python_packages": read_requirements(),
+        "python_source_builds": json.loads((app/"share/doc/layer-recorder/PYTHON_SOURCE_BUILDS.json").read_text()),
         "models": "not bundled; automatic speech recognition requires a user-provided model",
         "bundled_models": [],
     }

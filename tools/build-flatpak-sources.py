@@ -376,8 +376,9 @@ submodules, pinned whisper.cpp sources, locked vendored Rust dependencies,
 original checksum-verified capture/renderer/helper/driver source archives,
 Python source distributions, and optional reviewed sources/build recipes for
 additional native libraries. OpenCV is built without its own multimedia libraries;
-video decoding uses the matching known FFmpeg CLI. NumPy and Pillow wheels retain
-their separately supplied license notices for bundled permissive libraries. No recordings, user settings, model weights,
+video decoding uses the matching known FFmpeg CLI. NumPy and Pillow are built from the included source distributions against the SDK;
+NumPy uses a generic C baseline without external BLAS/Fortran runtimes, and Pillow
+uses SDK image/font libraries rather than wheel-vendored codec libraries. No recordings, user settings, model weights,
 compiled applications, build logs, Git metadata, or developer caches are included.
 
 See SOURCE_MANIFEST.json and FILE_SHA256SUMS for the exact contents. The source
@@ -406,9 +407,10 @@ and C/Rust source files remain included. Only reviewed artifacts unused by Linux
 are omitted; the source archive targets Linux rather than Windows or WebAssembly.
 Per-file Cargo checksum maps disclose those removals; registry package checksums
 remain unchanged. Unexpected compiled vendor files cause an error.
-Python sources and reviewed wheel-native component build scripts are under
- dependency-archives/. Rebuild the Python wheels using those recipes and install
-them with --no-index from a local wheelhouse when replacing the online pip step.
+Python source distributions are under dependency-archives/python/. Restore them
+to build/flatpak08/source-sdists; tools/build-flatpak-python.py verifies their
+checksums and rebuilds them with the recorded SDK/compiler flags. Build-tool pins
+are in that script; they are not copied into the application runtime.
 Model weights are optional user downloads, deliberately excluded from this archive.
 
 The overall Layer fork is GPL-3.0-only. Third-party components keep their own
