@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install media test runtime
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libxkbcommon-dev libwayland-dev libudev-dev libfontconfig-dev libdbus-1-dev libegl1-mesa-dev libx11-dev xvfb xauth
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libxkbcommon-dev libxkbcommon-x11-0 libgl1-mesa-dri dbus-x11 fonts-noto-core libwayland-dev libudev-dev libfontconfig-dev libdbus-1-dev libegl1-mesa-dev libx11-dev xvfb xauth
       - name: Build and test Rust core
         run: |
           rustup toolchain install stable --profile minimal
@@ -21,7 +21,14 @@ jobs:
           cargo test --locked --manifest-path native/editor/Cargo.toml
           python3 tools/build-native.py editor
       - name: Native interface startup and close regressions
-        run: xvfb-run -a python3 tools/smoke-ui.py
+        run: dbus-run-session -- xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1 python3 tools/smoke-ui.py
+      - name: Preserve startup diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-startup-diagnostics
+          path: build/ui-smoke/
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v6
         with:
           name: native-runtime

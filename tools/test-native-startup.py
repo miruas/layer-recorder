@@ -66,6 +66,11 @@ def main():
     report = {"display": "wayland" if os.environ.get("WAYLAND_DISPLAY") else "x11", "results": results}
     (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
+    for case in results:
+        if not case['passed']:
+            log = output / (case['case'] + '.log')
+            if log.is_file():
+                print(case['case'] + ' diagnostic: ' + log.read_text(errors='replace')[-6000:], file=__import__('sys').stderr)
     return 0 if all(result["passed"] for result in results) else 1
 
 
