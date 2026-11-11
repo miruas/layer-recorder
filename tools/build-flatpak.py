@@ -662,11 +662,8 @@ def stage_static(args: argparse.Namespace, paths: dict[str, Path | str], version
             for file in source.rglob('*'):
                 if file.is_file() and file.name.upper().startswith(('LICENSE','COPYING','COPYRIGHT','NOTICE')):
                     destination=target/file.relative_to(source);destination.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(file,destination)
-    # Only runtime components belong in the downloadable application.
-    shutil.rmtree(app/'include', ignore_errors=True)
-    shutil.rmtree(app/'lib/pkgconfig', ignore_errors=True)
-    for development_library in (app/'lib').glob('*.a'):
-        development_library.unlink()
+    # Keep SDK development inputs for incremental compiler caches. Exclude
+    # them from the exported runtime instead of deleting cached dependencies.
     validate_stage(args, paths)
 
 
@@ -805,6 +802,7 @@ def finish_and_export(args: argparse.Namespace, paths: dict[str, Path | str], ve
     repo.mkdir(parents=True, exist_ok=True)
     export = [
         "flatpak", "build-export",
+        "--exclude=/include/*", "--exclude=/lib/pkgconfig/*", "--exclude=/lib/*.a",
         "--arch", args.arch,
         "--subject", f"Layer {version}",
         "--body", "Layer recorder and independent-track editor",
