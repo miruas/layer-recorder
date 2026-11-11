@@ -9,6 +9,7 @@
 - Add a Freedesktop 26.08 Flatpak recipe with pinned static host helpers, full editor FFmpeg, speech executable and legacy Intel driver; never bundle speech models or user configuration.
 - Add Debian/openSUSE VM tooling and X11/Wayland startup regression checks. See the compatibility matrix for tested cases and outstanding hardware coverage.
 - Report capture startup failures in status and preserve ordinary GSR startup/shortcut behavior.
+- Coalesce autosave off the interface thread, gate media jobs on persisted source metadata, and flush edits asynchronously on close with recoverable save failures.
 
 ## 0.7.0
 

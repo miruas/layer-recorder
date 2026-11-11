@@ -60,6 +60,12 @@ struct Studio {
     polling: bool,
     last_poll: Instant,
     jobs: Jobs,
+    saver: crate::autosave::Autosave,
+    save_errors: BTreeMap<PathBuf, String>,
+    close_started: Option<Instant>,
+    close_flushed: bool,
+    close_token: u64,
+    allow_close: bool,
     frame_job: Option<(u64, u64, f64)>,
     job_context:BTreeMap<u64,(PathBuf,u64)>,
     frame_due: Option<Instant>,
@@ -198,6 +204,12 @@ impl Studio {
             polling: false,
             last_poll: Instant::now() - Duration::from_secs(10),
             jobs: Jobs::new(),
+            saver: crate::autosave::Autosave::new(),
+            save_errors: BTreeMap::new(),
+            close_started: None,
+            close_flushed: false,
+            close_token: 0,
+            allow_close: false,
             frame_job: None,
             job_context:BTreeMap::new(),
             frame_due: None,
@@ -247,7 +259,7 @@ impl Studio {
     fn queue_waveforms(&mut self){
         for(id,op,_)in &self.jobs.running{if op=="waveforms"{self.jobs.cancel(*id);}}
         if let Some(doc)=&self.document{
-            let id=self.jobs.start(&self.root,"waveforms",json!({"path":doc.path}));self.job_context.insert(id,(doc.path.clone(),doc.revision));
+            let id=self.jobs.start_after(&self.root,"waveforms",json!({"path":doc.path}),self.saver.barrier(doc.path.clone()));self.job_context.insert(id,(doc.path.clone(),doc.revision));
         }
     }
     fn gsr_program(&self)->PathBuf {
@@ -355,8 +367,11 @@ impl Studio {
         let generation = self.open_generation;
         let path = path.to_path_buf();
         let tx = self.tx.clone();
+        let saved = self.saver.barrier(path.clone());
         thread::spawn(move || {
-            let result = Document::load(&path).map_err(|e| format!("{e:#}"));
+            let result = saved.recv().map_err(|_| "The edit save service stopped.".to_string())
+                .and_then(|result| result)
+                .and_then(|()| Document::load(&path).map_err(|e| format!("{e:#}")));
             let _ = tx.send(Message::Opened(generation, result));
         });
     }
@@ -376,7 +391,7 @@ impl Studio {
                 self.export_fps = number(&doc.model, "fps", 60.) as u32;
                 if let Some(id)=doc.model["tracks"].as_array().and_then(|tracks|tracks.iter().find(|t|t["kind"]=="video")).and_then(|t|t["clips"].as_array()).and_then(|c|c.first()).and_then(|c|c["id"].as_str()).map(str::to_string){doc.selected.insert(id.clone());doc.primary=Some(id);}
                 self.waveforms.clear();
-                let id=self.jobs.start(&self.root,"waveforms",json!({"path":doc.path}));self.job_context.insert(id,(doc.path.clone(),doc.revision));
+                let id=self.jobs.start_after(&self.root,"waveforms",json!({"path":doc.path}),self.saver.barrier(doc.path.clone()));self.job_context.insert(id,(doc.path.clone(),doc.revision));
                 self.document = Some(doc);
                 self.frame_due = Some(Instant::now() + Duration::from_millis(150));
             }
@@ -435,12 +450,80 @@ impl Studio {
     fn changed(&mut self) {
         self.playback = None;
         self.preview = None;
-        if let Some(doc) = &mut self.document {
-            if let Err(e) = doc.save() {
-                self.error = format!("Edits could not be saved: {e:#}");
-            }
+        if let Some(doc) = &self.document {
+            self.saver.submit(doc.path.clone(), doc.project.clone(), doc.model.clone(), doc.revision);
         }
         self.frame_due = Some(Instant::now() + Duration::from_millis(140));
+    }
+    fn save_events(&mut self, ctx: &egui::Context) {
+        for event in self.saver.results.try_iter().collect::<Vec<_>>() {
+            match event {
+                crate::autosave::Event::Saved { path, revision: _, result } => match result {
+                    Ok(()) => {
+                        self.save_errors.remove(&path);
+                        if self.save_errors.is_empty() && self.error.starts_with("Edits could not be saved:") {
+                            self.error.clear();
+                        }
+                    }
+                    Err(error) => {
+                        self.error = format!("Edits could not be saved: {} — {error}", path.display());
+                        self.save_errors.insert(path, error);
+                    }
+                },
+                crate::autosave::Event::Flushed(token) => {
+                    if self.close_started.is_some() && token == self.close_token {
+                        self.close_flushed = true;
+                        if self.save_errors.is_empty() {
+                            self.allow_close = true;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fn closing(&mut self, ctx: &egui::Context) -> bool {
+        if self.allow_close { return false; }
+        if ctx.input(|input| input.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.close_started.is_none() {
+                self.close_started = Some(Instant::now());
+                self.close_flushed = false;
+                for (id, _, _) in &self.jobs.running { self.jobs.cancel(*id); }
+                self.close_token += 1;
+                self.saver.flush(self.close_token);
+            }
+        }
+        let Some(started) = self.close_started else { return false; };
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(80.);
+                ui.heading(if self.close_flushed { "Some edits could not be saved" } else { "Saving your edits…" });
+                ui.add_space(12.);
+                if !self.close_flushed { ui.spinner(); }
+                for (path, error) in &self.save_errors {
+                    ui.label(format!("{}: {error}", path.display()));
+                }
+                if self.close_flushed || started.elapsed() > Duration::from_secs(5) {
+                    ui.label("Closing without saving may lose recent edits.");
+                    ui.add_space(12.);
+                    if self.close_flushed && ui.button("Retry saving").clicked() {
+                        self.close_flushed = false;
+                        self.close_token += 1;
+                        self.saver.flush(self.close_token);
+                    }
+                    if ui.button("Continue editing").clicked() {
+                        self.close_started = None;
+                    }
+                    if ui.button("Close without saving").clicked() {
+                        self.allow_close = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+            });
+        });
+        ctx.request_repaint_after(Duration::from_millis(50));
+        true
     }
     fn media_job(&mut self, op: &str, mut request: Value) {
         if self.jobs.busy(){self.error="Finish or cancel the current media operation first.".into();return;}
@@ -449,7 +532,7 @@ impl Studio {
             request["model"] = doc.model.clone();
             request["position"] = json!(doc.position);
             self.progress = 0.;
-            let id=self.jobs.start(&self.root, op, request);
+            let id=self.jobs.start_after(&self.root, op, request, self.saver.barrier(doc.path.clone()));
             self.job_context.insert(id,(doc.path.clone(),doc.revision));
         }
     }
@@ -458,10 +541,11 @@ impl Studio {
             return;
         }
         if let Some(doc) = &self.document {
-            let id = self.jobs.start(
+            let id = self.jobs.start_after(
                 &self.root,
                 "frame",
                 json!({"path":doc.path,"model":doc.model,"position":doc.position,"width":960}),
+                self.saver.barrier(doc.path.clone()),
             );
             self.job_context.insert(id,(doc.path.clone(),doc.revision));
             self.frame_job = Some((id, doc.revision, doc.position));
@@ -561,7 +645,7 @@ impl Studio {
                     }
                     "batch_export"=>{
                         let paths:Vec<_>=self.batch_selected.iter().map(|path|path.to_string_lossy().into_owned()).collect();
-                        self.progress=0.;self.jobs.start(&self.root,"batch_export",json!({"paths":paths,"output_directory":file,"options":{"codec":self.export_codec,"quality":self.export_quality,"audio_only":self.export_audio,"fps":self.export_fps,"size":self.export_size}}));self.export_open=false;
+                        self.progress=0.;self.jobs.start_after(&self.root,"batch_export",json!({"paths":paths,"output_directory":file,"options":{"codec":self.export_codec,"quality":self.export_quality,"audio_only":self.export_audio,"fps":self.export_fps,"size":self.export_size}}),self.saver.barrier_all(self.batch_selected.iter().cloned().collect()));self.export_open=false;
                     }
                     "export" => {
                         if file.exists() {
@@ -1543,7 +1627,13 @@ impl eframe::App for Studio {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         let frame_started=Instant::now();
         self.passes += 1;
-        self.events(ctx);
+        if self.close_started.is_none() { self.events(ctx); }
+        self.save_events(ctx);
+        if self.allow_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        if self.closing(ctx) { return; }
         if self.startup.elapsed().as_secs_f64()>self.qa_after*0.4 && !self.opening {
             if let Some(panel)=self.qa_panel.take(){match panel.as_str(){
                 "settings"=>self.settings_open=true,
@@ -1634,7 +1724,7 @@ impl eframe::App for Studio {
                             doc.position = (model::clip_duration(&clip) * 0.5).max(0.1);
                             let _ = doc.split_selected();
                             doc.undo();
-                            let _ = doc.save();
+                            self.saver.submit(doc.path.clone(), doc.project.clone(), doc.model.clone(), doc.revision);
                         }
                     }
                 }
