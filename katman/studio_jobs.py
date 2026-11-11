@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Cancellable native media analysis, proxies, tracking and offline captions."""
 import copy
+import functools
 import hashlib
 import json
 import math
@@ -39,13 +40,22 @@ def build_proxies(path,cancel=None,progress=None):
     return len(videos)
 
 
+@functools.lru_cache(maxsize=1)
+def stabilization_fileformat_option():
+    # Older distro FFmpeg builds always write ASCII and have no fileformat
+    # option. Newer builds default to binary, so request ASCII explicitly.
+    help_text=subprocess.run(['ffmpeg','-hide_banner','-h','filter=vidstabdetect'],
+                             capture_output=True,text=True,timeout=10)
+    return ':fileformat=ascii' if 'fileformat' in help_text.stdout else ''
+
+
 def stabilize(path,clip,cancel=None,progress=None):
     path,project=load_project(path);source=next(s for s in project['sources'] if s['id']==clip['source_id']);root=CACHE/'studio-stabilization';root.mkdir(exist_ok=True)
     key=hashlib.sha256((str(path)+source['file']+str(clip['in'])+str(clip['length'])).encode()).hexdigest()[:24];result=root/(key+'.trf')
     from .studio_render import quote
     # libvidstab 1.1.1's binary header parser consumes accuracy=9 as a TAB.
     # ASCII avoids that upstream parsing bug and stays readable across releases.
-    args=['ffmpeg','-v','error','-ss',str(clip['in']),'-i',str(path.parent/source['file']),'-t',str(clip['length']),'-an','-vf',f"format=yuv420p,vidstabdetect=shakiness=5:accuracy=9:fileformat=ascii:result='{quote(result)}'",'-threads','2','-progress','pipe:1','-f','null','-']
+    args=['ffmpeg','-v','error','-ss',str(clip['in']),'-i',str(path.parent/source['file']),'-t',str(clip['length']),'-an','-vf',f"format=yuv420p,vidstabdetect=shakiness=5:accuracy=9{stabilization_fileformat_option()}:result='{quote(result)}'",'-threads','2','-progress','pipe:1','-f','null','-']
     run_process(args,root/(key+'.log'),cancel,progress,clip['length']);return str(result)
 
 
