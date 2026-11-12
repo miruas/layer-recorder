@@ -117,12 +117,8 @@ def _frame(payload, progress, cancel):
     validate(model, project)
     _cancelled(cancel)
     position = _number(_option(payload, "position", 0), "The frame position", 0)
-    try:
-        width = int(_option(payload, "width", 960))
-    except (TypeError, ValueError):
-        raise ValueError("The frame width must be an integer.") from None
-    if width < 2:
-        raise ValueError("The frame width must be at least 2 pixels.")
+    options=preview_options(model,_option(payload,'width'),_option(payload,'height'),_option(payload,'fps'),_option(payload,'size'),_option(payload,'proxy',False))
+    options['pixel_format']='rgba'
     signature = json.dumps(model, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
     project_signature = json.dumps(project, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
     key = hashlib.sha256(
@@ -136,7 +132,7 @@ def _frame(payload, progress, cancel):
             + "\0"
             + f"{position:.6f}"
             + "\0"
-            + str(width)
+            + json.dumps(options,sort_keys=True)
         ).encode()
     ).hexdigest()[:32]
     root = Path(CACHE) / "studio-native-frames"
@@ -149,7 +145,7 @@ def _frame(payload, progress, cancel):
     export_studio(
         path,
         destination,
-        preview_options(model, width),
+        options,
         progress,
         cancel,
         model=model,
@@ -167,13 +163,8 @@ def _preview(payload, progress, cancel):
     model = _model(payload, project)
     validate(model, project)
     _cancelled(cancel)
-    try:
-        width = int(_option(payload, "width", 960))
-    except (TypeError, ValueError):
-        raise ValueError("The preview width must be an integer.") from None
-    if width < 2:
-        raise ValueError("The preview width must be at least 2 pixels.")
-    return {"file": str(preview_file(path, model, cancel, progress, width))}
+    options=preview_options(model,_option(payload,'width'),_option(payload,'height'),_option(payload,'fps'),_option(payload,'size'),_option(payload,'proxy',False))
+    return {"file": str(preview_file(path, model, cancel, progress, options=options))}
 
 
 def _export(payload, progress, cancel):

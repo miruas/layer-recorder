@@ -136,3 +136,33 @@ physical source dimensions additionally clamp the requested bounds before
 launch. Layout metadata retains its original placement and source dimensions;
 the saved encoded track is probed for its actual size. Capture resolution is
 independent of export quality and export dimensions.
+
+### Preview quality and frame rate
+
+Preview preferences are independent of recording, replay, and export settings:
+
+```json
+{
+  "preview_resolution": "native",
+  "preview_fps": "source"
+}
+```
+
+`preview_resolution` accepts `native` (default), `1080p`, `1440p`, `4k`, or a
+custom object such as `{"width": 1600, "height": 1000}`. Custom dimensions must
+be even integers between 32 and 32768. These are bounds for the **combined
+canvas**, preserving its aspect ratio and never enlarging smaller content.
+Native keeps the canvas resolution up to the preview safety limit of 3840 ×
+2160; all preview modes share this limit to bound memory use. For example,
+Native preserves two side-by-side 1920 × 1080 sources at 3840 × 1080, while
+1080p limits their combined canvas to 1920 × 540. Output dimensions round down
+to even pixels. Source media remains unchanged.
+
+`preview_fps` accepts `source` (default), `60`, or `120`. Source follows the
+highest known frame rate of enabled video sources, then the recording's frame
+rate, then the editor canvas frame rate; missing metadata falls back to 60.
+Preview cadence is limited to 120 FPS. Source frame rates such as 59.94 and
+119.88 round to 60 and 120 for scheduling. Selecting 120 for a 60 FPS source
+can repeat frames; it does not synthesize additional motion detail or change
+the recording FPS. Higher-quality previews require more decoding and drawing
+work. These preferences never reduce capture FPS or alter export quality.

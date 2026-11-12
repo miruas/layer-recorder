@@ -15,8 +15,9 @@ import tempfile
 import threading
 from pathlib import Path
 from .editor_worker import _load, _model
-from .studio_model import duration, validate
+from .studio_model import duration, clip_duration, validate
 from .studio_render import compile_graph, number
+from .studio_jobs import preview_options
 
 
 def stop(process):
@@ -32,12 +33,10 @@ def stop(process):
 def stream(payload, output=None):
     output=output if output is not None else sys.stdout.buffer
     path,project=_load(payload);model=_model(payload,project);validate(model,project)
-    position=float(payload.get('position',0));fps=float(payload.get('fps',24))
-    size=payload.get('size',[payload.get('width',960),payload.get('height',540)])
-    if len(size)!=2:raise ValueError('Preview size requires width and height.')
-    size=tuple(int(n) for n in size)
-    if not all(2<=n<=4096 for n in size):raise ValueError('Invalid preview size.')
-    if not math.isfinite(position) or position<0 or not math.isfinite(fps) or not 1<=fps<=120:raise ValueError('Invalid preview position or frame rate.')
+    position=float(payload.get('position',0))
+    options=preview_options(model,payload.get('width'),payload.get('height'),payload.get('fps'),payload.get('size'),payload.get('proxy',False))
+    size=options['size'];fps=options['fps']
+    if not math.isfinite(position) or position<0:raise ValueError('Invalid preview position.')
     end=duration(model)
     if payload.get('window') is not None:
         window=float(payload['window'])
@@ -45,12 +44,13 @@ def stream(payload, output=None):
         end=min(end,position+window)
     if position>=end:return
     # Accurate effects always use the same graph as export, at playback size.
-    audio=payload.get('audio',True) and shutil.which('paplay') is not None
-    if payload.get('audio',True) and not audio:print('Preview audio unavailable: paplay is not installed.',file=sys.stderr)
+    needs_audio=payload.get('audio',True) and any(track.get('kind')=='audio' and not track.get('mute') and any(not clip.get('mute') and clip.get('start',0)<end and clip.get('start',0)+clip_duration(clip)>position for clip in track.get('clips',[])) for track in model.get('tracks',[]))
+    audio=needs_audio and shutil.which('paplay') is not None
+    if needs_audio and not audio:print('Preview audio unavailable: paplay is not installed.',file=sys.stderr)
     process=player=None;read_fd=write_fd=None;audio_thread=None
     ready=threading.Event();closed=threading.Event();audio_errors=[];player_lock=threading.Lock()
     with tempfile.TemporaryDirectory(prefix='layer-preview-stream-') as directory:
-        options={'size':size,'fps':fps,'video_only':not audio,'pixel_format':'rgba'}
+        options.update(video_only=not audio,pixel_format='rgba')
         args=compile_graph(path.parent,project,model,Path(directory),options,(position,end))
         # compile_graph supplies output maps and a duration for file exports.
         args=args[:-(6 if audio else 4)]

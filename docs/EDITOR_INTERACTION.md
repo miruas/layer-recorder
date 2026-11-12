@@ -37,3 +37,9 @@ Saving runs in the background and coalesces pending changes. Previews receive th
 Supported paused edits redraw cached source textures; other scenes use the accurate compositor. Play streams composed frames directly rather than first creating a timeline movie. See [Preview performance](PERFORMANCE.md) for supported paths, limits and reproducible measurements.
 
 Headless checks cover idle properties tabs, scoped clip edits and grouped undo/redo, object/caption changes, canvas scaling with absent-field restoration, source snapshots and streamed preview data. Live visual verification is separate from these checks.
+
+## Preview controls
+
+The play row contains Native/1080p/1440p/4K preview bounds and Source/60/120 FPS cadence. Native and Source are the defaults. The dimension/cadence label reports the request; Playing FPS reports delivered frames while playback runs. A higher cadence can repeat a slower source and does not add captured detail. Preview choices persist independently from capture and export.
+
+Privacy regions and titles remain separate overlays while editing. Changing their geometry preserves source-frame and underlay caches; selecting an unsupported scene retains the accurate compositor. Captions and advanced base effects can still require processing.

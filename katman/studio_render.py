@@ -188,7 +188,7 @@ def compile_graph(folder,project,model,tmp,options=None,window=None,frame=False)
         elif kind=='text':
             text=tmp/(tag+'.txt');text.write_text(ann.get('text',''),encoding='utf8');font=font_file(ann.get('font','Noto Sans'))
             x=f'({curve(ann,"x",local,0)})*{number(factor)}';y=f'({curve(ann,"y",local,0)})*{number(factor)}';alpha=curve(ann,'opacity',local,1)
-            graph.append(f"[{video}]drawtext=fontfile='{quote(font)}':textfile='{quote(text)}':fontsize={number(ann.get('font_size',36)*factor)}:fontcolor={ann.get('color','#ffffff').replace('#','0x')}:borderw=1:bordercolor=black:alpha='{alpha}':x='{x}':y='{y}':enable='{enable}'[{tag}]");video=tag
+            graph.append(f"[{video}]drawtext=fontfile='{quote(font)}':textfile='{quote(text)}':fontsize={number(ann.get('font_size',36)*factor)}:fontcolor={ann.get('color','#ffffff').replace('#','0x')}:borderw=1:bordercolor=black:expansion=none:alpha='{alpha}':x='{x}':y='{y}':enable='{enable}'[{tag}]");video=tag
         else:
             overlay=tmp/(tag+'.png');size=(max(2,round(ann.get('w',native_w)*factor)),max(2,round(ann.get('h',native_h)*factor)))
             stroke={**ann,'tool':kind};annotation_image({'annotations':[stroke]},size,overlay);args+=['-framerate',str(fps),'-loop','1','-i',str(overlay)];idx=input_index;input_index+=1

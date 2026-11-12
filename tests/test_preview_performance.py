@@ -18,6 +18,7 @@ from katman.common import atomic_json
 from katman.studio_model import from_project
 from katman.studio_render import compile_graph, media_fingerprint, export_studio
 from katman.preview_stream import stream
+from katman.studio_jobs import preview_options
 
 
 class PreviewStream(unittest.TestCase):
@@ -71,6 +72,16 @@ class PreviewStream(unittest.TestCase):
             pixel=frame[(30*250+30)*3:(30*250+30)*3+3]
             self.assertGreater(pixel[2 if i==0 else 0],180)
 
+    def test_scene_without_audio_does_not_launch_silent_sink(self):
+        payload=self.request(window=.1);payload['audio']=True
+        payload['model']['tracks']=[track for track in payload['model']['tracks'] if track['kind']=='video']
+        player=self.root/'paplay';marker=self.root/'unneeded-audio'
+        player.write_text('#!'+sys.executable+'\nfrom pathlib import Path\nPath('+repr(str(marker))+').touch()\n')
+        player.chmod(0o755)
+        with patch.dict(os.environ,PATH=str(self.root)+os.pathsep+os.environ['PATH']):
+            output=io.BytesIO();stream(payload,output)
+        self.assertGreater(len(output.getvalue()),0);self.assertFalse(marker.exists())
+
     def test_audio_is_real_pcm_from_same_timeline(self):
         payload=self.request(window=.25);payload['audio']=True
         player=self.root/'paplay';capture=self.root/'pcm.raw'
@@ -81,8 +92,34 @@ class PreviewStream(unittest.TestCase):
         pcm=capture.read_bytes();self.assertEqual(len(pcm),48000*4//4)
         self.assertTrue(any(pcm));self.assertEqual(len(output.getvalue()),6*250*160*4)
 
+    def test_source_rate_defaults_deliver_real_sixty_and_one_twenty_frames(self):
+        for fps in (60,120):
+            with self.subTest(fps=fps):
+                payload=self.request();file=self.root/f'media/rate{fps}.mkv'
+                subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i',f'nullsrc=s=64x36:r={fps}:d=0.2,geq=lum=20+N*8:cb=128:cr=128','-c:v','ffv1',str(file)],check=True)
+                self.hashes[file.name]=hashlib.sha256(file.read_bytes()).digest()
+                self.project['sources'][0].update(file=f'media/rate{fps}.mkv',width=64,height=36,media_duration=.2)
+                atomic_json(self.path,self.project)
+                model=payload['model'];model.update(width=64,height=36,fps=fps);model['tracks']=model['tracks'][:1]
+                model['tracks'][0]['clips'][0].update(length=.2,duration=.2,w=64,h=36)
+                payload.pop('fps');payload.pop('size')
+                output=io.BytesIO();stream(payload,output);raw=output.getvalue();stride=64*36*4
+                self.assertEqual(len(raw),round(fps*.2)*stride)
+                values=[raw[i] for i in range(0,len(raw),stride)]
+                self.assertEqual(len(set(values)),len(values))
+                self.assertEqual(values,sorted(values))
+
+    def test_preview_quality_is_explicit_and_source_rate_is_capped(self):
+        model={'width':3840,'height':2160,'fps':120}
+        native=preview_options(model);self.assertEqual(native['size'],(3840,2160));self.assertEqual(native['fps'],120);self.assertFalse(native['proxy'])
+        selected=preview_options(model,size=[1920,1080],fps=60,proxy=True)
+        self.assertEqual(selected['size'],(1920,1080));self.assertEqual(selected['fps'],60);self.assertTrue(selected['proxy'])
+        self.assertEqual(preview_options({**model,'fps':240})['fps'],120)
+        for size in ([0,1080],[8192,8192],[1920]):
+            with self.assertRaises(ValueError):preview_options(model,size=size)
+
     def test_cancel_owned_group_reaps_decoder(self):
-        payload=self.request()
+        payload=self.request();payload['fps']=120
         for track in payload['model']['tracks']:
             if track['kind']=='audio':track['mute']=True
             for clip in track['clips']:clip.update(freeze=True,freeze_at=0,duration=120)
@@ -161,6 +198,15 @@ class SnapshotPreview(unittest.TestCase):
                 snapshot=copy.deepcopy(self.project);snapshot['sources'][0]['file']=file
                 result=self.frame({**payload,'project_snapshot':snapshot})
                 self.assertFalse(result['ok']);self.assertIn('inside the project folder',result['error'])
+
+    def test_frame_quality_size_changes_cache_and_exact_output(self):
+        payload=self.request();payload['project_snapshot']=copy.deepcopy(self.project)
+        first=self.frame({**payload,'size':[250,160],'fps':60});second=self.frame({**payload,'size':[500,320],'fps':120})
+        self.assertTrue(first['ok'],first);self.assertTrue(second['ok'],second)
+        self.assertNotEqual(first['data']['file'],second['data']['file'])
+        for result,size in ((first,[250,160]),(second,[500,320])):
+            data=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_entries','stream=width,height','-of','json',result['data']['file']]))['streams'][0]
+            self.assertEqual([data['width'],data['height']],size)
 
     def test_snapshot_raw_stream_does_not_load_disk_project(self):
         payload=self.request(window=.125);payload['project_snapshot']=copy.deepcopy(self.project)

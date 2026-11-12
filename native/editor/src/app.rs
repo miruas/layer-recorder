@@ -41,7 +41,10 @@ enum Message {
     Microphones(Result<Vec<(String,String)>,String>),
     LibrarySaved(String, Result<(), String>),
     File(String, Option<PathBuf>),
+    PreviewSaved(Result<(),String>),
 }
+#[derive(Clone,PartialEq)]
+struct UnderlayKey {path:PathBuf,base:u64,position:u64,size:[u32;2]}
 struct Studio {
     root: PathBuf,
     cfg: Value,
@@ -79,8 +82,24 @@ struct Studio {
     frame_due: Option<Instant>,
     texture: Option<egui::TextureHandle>,
     fast_cache: crate::fast_preview::Cache,
+    gpu:Option<std::sync::Arc<crate::gpu_effects::Compositor>>,
+    gpu_failed:bool,
+    overlays:crate::overlay_cache::Cache,
+    preview_settings:crate::preview_settings::PreviewSettings,
+    preview_writer:mpsc::Sender<crate::preview_settings::PreviewSettings>,
+    playback_base:Option<Value>,
+    playback_clock:Option<Instant>,
+    playback_first_frame:Option<Instant>,
+    playback_frames:u32,
+    playback_fps:f64,
     fast_scene: Option<crate::fast_preview::Scene>,
     fast_key: Option<(u64,u64)>,
+    underlay:bool,
+    underlay_generation:u64,
+    playback_sequence:u64,
+    underlay_texture:Option<egui::TextureHandle>,
+    underlay_cached:Option<UnderlayKey>,
+    underlay_pending:Option<(u64,UnderlayKey)>,
     library_open: bool,
     properties_open: bool,
     frame_revision: u64,
@@ -118,6 +137,13 @@ struct Studio {
     qa_exit: bool,
     qa_actions: bool,
     qa_panel: Option<String>,
+    qa_preview:Option<PathBuf>,
+    qa_preview_requested:bool,
+    qa_position:Option<f64>,
+    qa_overlay_steps:u32,
+    qa_overlay_target:u32,
+    qa_play_seconds:Option<f64>,
+    qa_play_started:Option<Instant>,
     output_frame: Option<PathBuf>,
     drag_origin: Option<Vec<(String, f64)>>,
     timeline_zoom:f32,
@@ -197,6 +223,15 @@ impl Studio {
                 }
             }
         });
+        let (preview_writer,preview_requests)=mpsc::channel();let preview_results=tx.clone();
+        thread::spawn(move||{while let Ok(mut prefs)=preview_requests.recv(){while let Ok(latest)=preview_requests.try_recv(){prefs=latest;}let _=preview_results.send(Message::PreviewSaved(ipc::save_preview_preferences(prefs).map_err(|e|e.to_string())));}});
+        let overlays=crate::overlay_cache::Cache::new(root.clone());
+        let preview_settings=crate::preview_settings::PreviewSettings::from_config(&cfg).unwrap_or_default();
+        let (gpu,error)=match cc.gl.as_ref().map(|gl|crate::gpu_effects::Compositor::new(gl)){
+            Some(Ok(gpu))=>(Some(gpu),error),
+            Some(Err(message))=>(None,format!("GPU overlays are unavailable; accurate preview is active. {}",message.chars().take(240).collect::<String>())),
+            None=>(None,error),
+        };
         let mut s = Self {
             root,
             cfg,
@@ -233,8 +268,9 @@ impl Studio {
             frame_due: None,
             texture: None,
             fast_cache: crate::fast_preview::Cache::new(),
+            gpu,gpu_failed:false,overlays,preview_settings,preview_writer,playback_base:None,playback_clock:None,playback_first_frame:None,playback_frames:0,playback_fps:0.,
             fast_scene: None,
-            fast_key: None,
+            fast_key: None,underlay:false,underlay_generation:0,playback_sequence:0,underlay_texture:None,underlay_cached:None,underlay_pending:None,
             library_open: true,
             properties_open: false,
             frame_revision: u64::MAX,
@@ -265,6 +301,10 @@ impl Studio {
             qa_requested: false,
             qa_exit: false,
             qa_actions,
+            qa_preview:std::env::args().collect::<Vec<_>>().windows(2).find(|a|a[0]=="--qa-preview").map(|a|PathBuf::from(&a[1])),
+            qa_play_seconds:std::env::args().collect::<Vec<_>>().windows(2).find(|a|a[0]=="--qa-play-seconds").and_then(|a|a[1].parse::<f64>().ok()).filter(|t|t.is_finite()&&*t>0.&&*t<=10.),qa_play_started:None,
+            qa_preview_requested:false,qa_overlay_steps:0,qa_overlay_target:if std::env::args().any(|a|a=="--qa-overlay-edits"){60}else{0},
+            qa_position:std::env::args().collect::<Vec<_>>().windows(2).find(|a|a[0]=="--qa-position").and_then(|a|a[1].parse::<f64>().ok()).filter(|t|t.is_finite()&&*t>=0.),
             qa_panel: std::env::args().collect::<Vec<_>>().windows(2).find(|args|args[0]=="--qa-panel").map(|args|args[1].clone()),
             output_frame: None,
             drag_origin: None,
@@ -402,6 +442,7 @@ impl Studio {
         self.opening = false;
         match result {
             Ok(mut doc) => {
+                if let Some(t)=self.qa_position{doc.position=t.min(model::duration(&doc.model));}
                 self.playback = None;
                 self.preview = None;
                 self.texture = None;
@@ -416,7 +457,7 @@ impl Studio {
                 self.waveforms.clear();
                 let id=self.jobs.start_after(&self.root,"waveforms",json!({"path":doc.path}),self.saver.barrier(doc.path.clone()));self.job_context.insert(id,(doc.path.clone(),doc.revision));
                 self.document = Some(doc);
-                self.fast_cache.clear();self.fast_scene=None;self.fast_key=None;
+                self.fast_cache.clear();self.overlays.clear();self.playback_base=None;self.underlay=false;self.underlay_texture=None;self.underlay_cached=None;self.underlay_pending=None;self.fast_scene=None;self.fast_key=None;
                 self.library_open=false;
                 self.frame_due = Some(Instant::now() + Duration::from_millis(150));
             }
@@ -498,9 +539,18 @@ impl Studio {
             let _ = tx.send(Message::File(kind, file));
         });
     }
+    fn underlay_key(&self)->Option<UnderlayKey>{
+        let doc=self.document.as_ref()?;
+        Some(UnderlayKey{path:doc.path.clone(),base:crate::fast_preview::base_fingerprint(&doc.model)?,position:doc.position.to_bits(),size:self.preview_settings.size([number(&doc.model,"width",1920.)as u32,number(&doc.model,"height",1080.)as u32])})
+    }
     fn changed(&mut self) {
-        self.playback = None;
-        if let Some((id,_,_))=self.frame_job.take(){self.jobs.cancel(id);self.job_context.remove(&id);}
+        let keep_playing=self.playback.is_some()&&self.playback_base.as_ref().is_some_and(|base|self.document.as_ref().and_then(|doc|crate::fast_preview::base_fingerprint(&doc.model))==crate::fast_preview::base_fingerprint(base));
+        if !keep_playing{self.playback=None;self.playback_base=None;}
+        self.fast_key=None;
+        let keep_underlay=self.underlay_pending.as_ref().is_some_and(|(_,key)|self.underlay_key().as_ref()==Some(key));
+        if keep_underlay{
+            if let (Some((id,rev,_)),Some(doc))=(&mut self.frame_job,&self.document){*rev=doc.revision;if let Some(context)=self.job_context.get_mut(id){context.1=doc.revision;}}
+        }else if let Some((id,_,_))=self.frame_job.take(){self.jobs.cancel(id);self.job_context.remove(&id);self.underlay_pending=None;}
         self.frame_revision=u64::MAX;
         self.preview = None;
         if let Some(doc) = &self.document {
@@ -590,36 +640,56 @@ impl Studio {
         }
     }
     fn refresh_fast_scene(&mut self,ctx:&egui::Context) {
-        self.fast_cache.poll(ctx);
-        if self.playback.is_some(){return;}
+        self.fast_cache.poll(ctx);self.overlays.poll(ctx);
+        if let Some(error)=self.gpu.as_ref().and_then(|gpu|gpu.take_error()){self.gpu_failed=true;self.error=error;self.texture=None;self.frame_revision=u64::MAX;self.fast_key=None;self.playback=None;self.playback_base=None;self.frame_due=Some(Instant::now());}
         if let Some(doc)=&self.document{
             let key=(doc.revision,doc.position.to_bits());
             if self.fast_key!=Some(key){
-                self.fast_scene=crate::fast_preview::scene(&doc.path,&doc.project,&doc.model,doc.position);
+                let gpu=self.gpu.is_some()&&!self.gpu_failed;
+                self.fast_scene=if self.playback.is_some(){
+                    if self.playback_base.is_some()&&gpu{crate::fast_preview::overlay_scene(&doc.model,doc.position)}else{None}
+                }else{
+                    let source_bounds=self.preview_settings.size([3840,2160]);
+                    let scene=crate::fast_preview::scene_with_options(&doc.path,&doc.project,&doc.model,doc.position,source_bounds,gpu);
+                    self.underlay=scene.is_none()&&gpu&&crate::fast_preview::base_fingerprint(&doc.model).is_some();
+                    if self.underlay{let overlay=crate::fast_preview::overlay_scene(&doc.model,doc.position);if overlay.is_none(){self.underlay=false;}overlay}else{scene}
+                };
                 self.fast_key=Some(key);
-                if let Some(scene)=&self.fast_scene{self.fast_cache.request(scene);}
+                if self.playback.is_some()&&self.playback_base.is_some()&&self.fast_scene.is_none(){
+                    self.playback=None;self.playback_base=None;self.underlay=false;self.texture=None;self.frame_revision=u64::MAX;self.frame_due=Some(Instant::now());
+                    self.error="This overlay needs the accurate preview. Playback stopped while it is prepared.".into();
+                }
+                if let Some(scene)=&self.fast_scene{
+                    if self.playback.is_none(){self.fast_cache.request(scene);}
+                    self.overlays.request(&crate::fast_preview::text_keys(scene));
+                }
             }
             if let Some(scene)=&self.fast_scene{
-                if self.fast_cache.failed(scene){self.fast_scene=None;self.frame_due=Some(Instant::now());}
-                else if !self.fast_cache.ready(scene){ctx.request_repaint_after(Duration::from_millis(8));}
+                let texts=crate::fast_preview::text_keys(scene);
+                if self.fast_cache.failed(scene)||texts.iter().any(|key|self.overlays.failed(key)){self.fast_scene=None;self.underlay=false;self.texture=None;self.frame_revision=u64::MAX;self.frame_due=Some(Instant::now());self.playback=None;self.playback_base=None;}
+                else if !self.fast_cache.ready(scene)||texts.iter().any(|key|!self.overlays.ready(key)){ctx.request_repaint_after(Duration::from_millis(4));}
             }
         }
     }
     fn queue_frame(&mut self) {
-        if self.output_frame.is_none() && self.fast_scene.is_some(){self.frame_due=None;return;}
+        if self.output_frame.is_none() && self.fast_scene.is_some()&&!self.underlay{self.frame_due=None;return;}
         if self.frame_job.is_some() {
             return;
         }
+        let underlay=if self.underlay&&self.output_frame.is_none(){self.underlay_key()}else{None};
+        if underlay.is_some()&&underlay==self.underlay_cached&&self.underlay_texture.is_some(){self.frame_due=None;return;}
         if let Some(doc) = &self.document {
+            let base_model=if underlay.is_some(){crate::fast_preview::playback_base(&doc.model)}else{None};
             let mut project=doc.project.clone();
             if let Some(object)=project.as_object_mut(){object.remove("studio");}
             let id = self.jobs.start(
                 &self.root,
                 "frame",
-                json!({"path":doc.path,"project_snapshot":project,"model":doc.model,"position":doc.position,"width":960}),
+                json!({"path":doc.path,"project_snapshot":project,"model":base_model.as_ref().unwrap_or(&doc.model),"position":doc.position,"size":if self.output_frame.is_some(){crate::preview_settings::PreviewSettings::default().size([number(&doc.model,"width",1920.)as u32,number(&doc.model,"height",1080.)as u32])}else{self.preview_settings.size([number(&doc.model,"width",1920.)as u32,number(&doc.model,"height",1080.)as u32])},"fps":self.preview_settings.fps(&doc.model,&doc.project)}),
             );
             self.job_context.insert(id,(doc.path.clone(),doc.revision));
             self.frame_job = Some((id, doc.revision, doc.position));
+            self.underlay_pending=underlay.map(|key|(id,key));
             self.frame_due = None;
         }
     }
@@ -686,6 +756,7 @@ impl Studio {
                 }
                 Message::Library(rows) => self.library = rows,
                 Message::Microphones(result)=>{self.microphones_loading=false;match result{Ok(devices)=>{self.microphones=devices;if !self.microphones.iter().any(|(id,_)|id==&self.microphone){if let Some((id,_))=self.microphones.first(){self.microphone=id.clone();}else{self.voiceover_error="No microphone is available. Check your desktop sound settings.".into();}}},Err(error)=>self.voiceover_error=error}},
+                Message::PreviewSaved(result)=>{if let Err(error)=result{self.error=format!("Could not save preview settings: {error}");}},
                 Message::LibrarySaved(library, result) => {
                     match result { Ok(())=>{self.settings_revision+=1;self.cfg["library"]=json!(library);self.scan();},Err(error)=>self.error=error }
                 }
@@ -693,7 +764,7 @@ impl Studio {
                     self.settings_polling=false;
                     if revision!=self.settings_revision{continue;}
                     match result {
-                        Ok(cfg)=>{let changed=self.cfg["library"]!=cfg["library"];if !self.settings_open||self.library_edit==self.cfg["library"].as_str().unwrap_or(""){self.library_edit=cfg["library"].as_str().unwrap_or("~/Videos/Layer").into();}self.cfg=cfg;if changed{self.scan();}},
+                        Ok(cfg)=>{let changed=self.cfg["library"]!=cfg["library"];if !self.settings_open||self.library_edit==self.cfg["library"].as_str().unwrap_or(""){self.library_edit=cfg["library"].as_str().unwrap_or("~/Videos/Layer").into();}let preview=crate::preview_settings::PreviewSettings::from_config(&cfg).unwrap_or_default();if preview!=self.preview_settings{self.preview_settings=preview;self.fast_key=None;self.frame_due=Some(Instant::now());}self.cfg=cfg;if changed{self.scan();}},
                         Err(error)=>self.error=format!("Recording preferences: {error}"),
                     }
                 }
@@ -798,8 +869,15 @@ impl Studio {
                                     {
                                         if rev == doc.revision && (pos - doc.position).abs() < 0.05
                                         {
-                                            self.load_texture(ctx, file);
-                                            self.frame_revision = rev;
+                                            let underlay=self.underlay_pending.take().filter(|(job,_)|*job==id).map(|(_,key)|key);
+                                            if let Some(key)=underlay{
+                                                if self.underlay_key().as_ref()==Some(&key){
+                                                    match image::open(file){Ok(image)=>{let pixels=image.to_rgba8();let size=[pixels.width()as usize,pixels.height()as usize];let image=egui::ColorImage::from_rgba_unmultiplied(size,&pixels);if let Some(texture)=&mut self.underlay_texture{texture.set(image,egui::TextureOptions::LINEAR);}else{self.underlay_texture=Some(ctx.load_texture("Cached source composition",image,egui::TextureOptions::LINEAR));}self.underlay_cached=Some(key);self.underlay_generation=self.underlay_generation.wrapping_add(1);},Err(error)=>self.error=error.to_string()}
+                                                }
+                                                self.frame_due=Some(Instant::now());
+                                            }else{
+                                                self.load_texture(ctx,file);self.frame_revision=rev;
+                                            }
                                         } else {
                                             self.frame_due = Some(Instant::now());
                                         }
@@ -893,18 +971,21 @@ impl Studio {
                 latest = Some(frame);
             }
             if let Some(frame) = latest {
+                self.playback_first_frame.get_or_insert_with(Instant::now);self.playback_frames+=1;self.playback_sequence=self.playback_sequence.wrapping_add(1);
+                let clock=self.playback_clock.get_or_insert_with(Instant::now);
+                if clock.elapsed().as_secs_f64()>=0.5{self.playback_fps=self.playback_frames as f64/clock.elapsed().as_secs_f64();self.playback_frames=0;*clock=Instant::now();}
                 let image=egui::ColorImage::from_rgba_unmultiplied([frame.width,frame.height],&frame.rgba);
                 if let Some(texture)=&mut self.texture{texture.set(image,egui::TextureOptions::LINEAR);}else{self.texture=Some(ctx.load_texture("Playing",image,egui::TextureOptions::LINEAR));}
                 if let Some(doc) = &mut self.document {
                     doc.position = frame.time;
                 }
             }
-            if let Some(doc) = &self.document {
-                if doc.position >= model::duration(&doc.model) - 0.05 || self.playback.as_ref().is_some_and(|p|p.finished.load(std::sync::atomic::Ordering::Acquire)) {
-                    self.playback = None;
+            if self.document.is_some() {
+                if self.playback.as_ref().is_some_and(|p|p.finished.load(std::sync::atomic::Ordering::Acquire)) {
+                    self.playback = None;self.playback_base=None;self.fast_key=None;
                 }
             }
-            ctx.request_repaint_after(Duration::from_millis(15));
+
         }
         self.refresh_fast_scene(ctx);
         if self.frame_due.is_some_and(|time| Instant::now() >= time)
@@ -1100,22 +1181,20 @@ impl Studio {
             }
         }
     }
-    fn play(&mut self) {
-        if self.playback.is_some() {
-            self.playback = None;
-            self.frame_due = Some(Instant::now());
-            return;
-        }
-        let Some(doc) = &self.document else {
-            return;
-        };
+    fn play(&mut self,ctx:&egui::Context) {
+        self.fast_key=None;
+        if self.playback.is_some(){self.playback=None;self.playback_base=None;self.frame_due=Some(Instant::now());return;}
+        let Some(doc)=&self.document else{return;};
         let position=if doc.position>=model::duration(&doc.model)-0.04{0.}else{doc.position};
-        match Playback::start_timeline(&self.root,&doc.path,&doc.model,&doc.project,position,[number(&doc.model,"width",1920.)as u32,number(&doc.model,"height",1080.)as u32]){
-            Ok(player)=>{self.playback=Some(player);self.want_play=false;},
+        let canvas=[number(&doc.model,"width",1920.)as u32,number(&doc.model,"height",1080.)as u32];
+        let base=if self.gpu.is_some()&&!self.gpu_failed{crate::fast_preview::playback_base(&doc.model)}else{None};
+        match Playback::start_timeline(&self.root,&doc.path,base.as_ref().unwrap_or(&doc.model),&doc.project,position,canvas,self.preview_settings.size(canvas),self.preview_settings.fps(&doc.model,&doc.project)as f64,ctx.clone()){
+            Ok(player)=>{self.playback=Some(player);self.playback_base=base;self.playback_clock=None;self.playback_first_frame=None;self.playback_frames=0;self.playback_fps=0.;self.want_play=false;},
             Err(error)=>self.error=error.to_string(),
         }
     }
     fn canvas(&mut self, ui: &mut egui::Ui) {
+        let ctx=ui.ctx().clone();
         self.editing_bar(ui);
         ui.add_space(8.);
         let Some(doc) = &self.document else {
@@ -1125,6 +1204,7 @@ impl Studio {
             number(&doc.model, "width", 1920.) as f32,
             number(&doc.model, "height", 1080.) as f32,
         );
+        let source_fps=crate::preview_settings::PreviewSettings{frame_rate:crate::preview_settings::FrameRate::Source,..self.preview_settings}.fps(&doc.model,&doc.project);
         let avail = Vec2::new(
             ui.available_width(),
             (ui.available_height() - (48. + (850. / ui.available_width().max(200.)).ceil() * 40.)).max(80.),
@@ -1135,25 +1215,32 @@ impl Studio {
         let rect = Rect::from_center_size(outer.center(), size);
         ui.painter()
             .rect_filled(outer, 0., Color32::from_rgb(10, 12, 14));
-        if self.playback.is_none() && self.fast_scene.is_some() {
-            let scene=self.fast_scene.as_ref().unwrap();
-            self.fast_cache.paint(ui.painter(),rect,canvas_size,scene);
-            if !self.fast_cache.ready(scene){ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,"Loading source frame…",egui::FontId::proportional(14.),ui.visuals().text_color());}
-        } else if let Some(texture) = &self.texture.as_ref().filter(|_|self.playback.is_some()||self.frame_revision==doc.revision) {
-            ui.painter().image(
-                texture.id(),
-                rect,
-                Rect::from_min_max(Pos2::ZERO, Pos2::new(1., 1.)),
-                Color32::WHITE,
-            );
-        } else {
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "Preparing preview…",
-                egui::FontId::proportional(16.),
-                Color32::from_gray(180),
-            );
+        let native_canvas=[canvas_size.x,canvas_size.y];
+        let raster=self.preview_settings.size([canvas_size.x as u32,canvas_size.y as u32]);
+        let gpu_frame=if self.gpu.is_some()&&!self.gpu_failed{
+            self.fast_scene.as_ref().and_then(|scene|{
+                if self.playback.is_some()&&self.playback_base.is_some(){
+                    let texture=self.texture.as_ref()?;
+                    let mut ops=vec![crate::gpu_effects::Op::Mesh(crate::fast_preview::image_mesh(texture.id(),[0.,0.,canvas_size.x,canvas_size.y],Color32::WHITE),None)];
+                    ops.extend(crate::fast_preview::mark_ops(&ctx,scene,native_canvas,&self.overlays)?);
+                    Some(crate::gpu_effects::Frame{size:raster,canvas:native_canvas,ops,base_count:1,generation:self.playback_sequence})
+                }else if self.playback.is_none()&&self.underlay{
+                    let key=self.underlay_key()?;if self.underlay_cached.as_ref()!=Some(&key){return None;}
+                    let texture=self.underlay_texture.as_ref()?;
+                    let mut ops=vec![crate::gpu_effects::Op::Mesh(crate::fast_preview::image_mesh(texture.id(),[0.,0.,canvas_size.x,canvas_size.y],Color32::WHITE),None)];
+                    ops.extend(crate::fast_preview::mark_ops(&ctx,scene,native_canvas,&self.overlays)?);
+                    Some(crate::gpu_effects::Frame{size:raster,canvas:native_canvas,ops,base_count:1,generation:self.underlay_generation})
+                }else if self.playback.is_none(){self.fast_cache.gpu_frame(&ctx,scene,native_canvas,raster,&self.overlays)}else{None}
+            })
+        }else{None};
+        if let Some(frame)=gpu_frame{
+            ui.painter().add(egui::Shape::Callback(self.gpu.as_ref().unwrap().callback(rect,frame)));
+        }else if self.playback.is_none()&&self.fast_scene.is_some()&&self.gpu.is_none(){
+            self.fast_cache.paint(ui.painter(),rect,canvas_size,self.fast_scene.as_ref().unwrap());
+        }else if self.fast_scene.is_none()&&let Some(texture)=self.texture.as_ref().filter(|_|self.playback.is_some()||self.frame_revision==doc.revision){
+            ui.painter().image(texture.id(),rect,Rect::from_min_max(Pos2::ZERO,Pos2::new(1.,1.)),Color32::WHITE);
+        }else{
+            ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,"Preparing preview…",egui::FontId::proportional(16.),Color32::from_gray(180));
         }
         let response = ui.interact(rect, ui.id().with("canvas"), Sense::click_and_drag());
         let point = response.interact_pointer_pos().map(|p| {
@@ -1242,7 +1329,8 @@ impl Studio {
             }
         }
         ui.add_space(6.);
-        ui.horizontal(|ui| {
+        let mut preview_changed=false;
+        ui.horizontal_wrapped(|ui| {
             if ui
                 .button(if self.playback.is_some() {
                     "Pause"
@@ -1251,7 +1339,7 @@ impl Studio {
                 })
                 .clicked()
             {
-                self.play();
+                self.play(&ctx);
             }
             if let Some(doc) = &mut self.document {
                 let span = model::duration(&doc.model);
@@ -1267,7 +1355,15 @@ impl Studio {
                 }
                 ui.label(format!("{} / {}", timecode(doc.position), timecode(span)));
             }
+            preview_changed=crate::preview_toolbar::show(ui,&mut self.preview_settings,[canvas_size.x as u32,canvas_size.y as u32],source_fps);
+            if self.playback.is_some()&&self.playback_fps>0.{ui.label(RichText::new(format!("Playing {:.0} FPS",self.playback_fps)).small()).on_hover_text("Frames delivered to this window over the last half-second. The display refresh rate and rendering load can limit visible playback.");}
         });
+        if preview_changed{
+            self.settings_revision+=1;
+            let prefs=self.preview_settings;let _=prefs.write_config(&mut self.cfg);
+            if self.preview_writer.send(prefs).is_err(){self.error="Could not save preview preferences. Restart the editor and try again.".into();}
+            self.playback=None;self.playback_base=None;self.fast_key=None;self.frame_revision=u64::MAX;self.frame_due=Some(Instant::now());
+        }
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.tool,"Select".into(),"Select");
             let draw_label=if ["Pen","Line","Arrow","Rectangle"].contains(&self.tool.as_str()){self.tool.clone()}else{"Draw".into()};
@@ -1693,7 +1789,7 @@ impl Studio {
             self.changed();
         }
         if play {
-            self.play();
+            self.play(&ctx);
         }
         if export && self.document.is_some() && !self.jobs.busy() {
             self.batch_mode = false;
@@ -1702,11 +1798,34 @@ impl Studio {
     }
 }
 impl eframe::App for Studio {
+    fn on_exit(&mut self,gl:Option<&eframe::glow::Context>){if let (Some(gpu),Some(gl))=(&self.gpu,gl){gpu.destroy(gl);}}
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         let frame_started=Instant::now();
         self.passes += 1;
         if self.close_started.is_none() { self.events(ctx); }
         self.save_events(ctx);
+        if let Some(seconds)=self.qa_play_seconds{
+            if self.qa_play_started.is_none()&&!self.opening&&self.document.is_some()&&self.startup.elapsed().as_secs_f64()>=0.7{self.play(ctx);self.qa_play_started=Some(Instant::now());}
+            if self.qa_play_started.is_some_and(|t|t.elapsed().as_secs_f64()>=seconds){
+                if let Some(doc)=&self.document{let canvas=[number(&doc.model,"width",1920.)as u32,number(&doc.model,"height",1080.)as u32];println!("LAYER_PLAYBACK_QA {}",json!({"target_fps":self.preview_settings.fps(&doc.model,&doc.project),"delivered_fps":self.playback_fps,"received_frames":self.playback_sequence,"size":self.preview_settings.size(canvas),"source_position":doc.position,"wall_after_first_frame":self.playback_first_frame.map(|t|t.elapsed().as_secs_f64()),"error":self.error}));}
+                self.qa_exit=true;ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            ctx.request_repaint_after(Duration::from_millis(4));
+        }
+        if self.qa_overlay_steps<self.qa_overlay_target&&self.startup.elapsed().as_secs_f64()>=self.qa_after{
+            let source_ready=self.fast_scene.as_ref().is_some_and(|scene|self.fast_cache.ready(scene)&&crate::fast_preview::text_keys(scene).iter().all(|key|self.overlays.ready(key)))&&(!self.underlay||self.underlay_cached==self.underlay_key());
+            if source_ready&&let Some(doc)=&mut self.document{
+                if let Some(ann)=doc.model["annotations"].as_array_mut().and_then(|annotations|annotations.iter_mut().find(|ann|["redact","blur","pixelate"].contains(&ann["kind"].as_str().unwrap_or("")))){
+                    let x=number(ann,"x",0.);ann["x"]=json!(x+if self.qa_overlay_steps%2==0{1.}else{-1.});doc.revision+=1;
+                }
+                self.qa_overlay_steps+=1;self.changed();ctx.request_repaint();
+            }
+        }
+        if let Some(gpu)=&self.gpu{
+            if let Some(result)=gpu.take_capture(){match result{Ok(path)=>{let stats=gpu.statistics.lock().unwrap();println!("LAYER_GPU_CAPTURE_OK {} frames={} roi_pixels={} cpu_ms={:.3} source_decodes={} base_renders={} underlay_renders={} overlay_edits={}",path.display(),stats.frames,stats.effect_pixels,stats.last_cpu_ms,self.fast_cache.decoded,stats.base_renders,self.underlay_generation,self.qa_overlay_steps);},Err(error)=>eprintln!("GPU capture failed: {error}")};ctx.send_viewport_cmd(egui::ViewportCommand::Close);self.qa_exit=true;}
+            if self.startup.elapsed().as_secs_f64()>=self.qa_after&&self.qa_overlay_steps>=self.qa_overlay_target&&self.document.as_ref().is_some_and(|doc|self.fast_key==Some((doc.revision,doc.position.to_bits())))&&!self.qa_preview_requested&&let Some(path)=self.qa_preview.clone(){gpu.request_capture(path,ctx.clone());self.qa_preview_requested=true;ctx.request_repaint();}
+        }
+
         if self.allow_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
