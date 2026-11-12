@@ -1,3 +1,4 @@
+/* Modified by Layer on 2026-11-12: bound capture size without upscaling. */
 #include "../../include/capture/kms.h"
 #include "../../include/log.h"
 #include "../../include/utils.h"
@@ -214,7 +215,7 @@ static int gsr_capture_kms_start(gsr_capture *cap, gsr_capture_metadata *capture
         capture_size = self->params.region_size;
 
     if(self->params.output_resolution.x > 0 && self->params.output_resolution.y > 0) {
-        self->params.output_resolution = scale_keep_aspect_ratio(capture_size, self->params.output_resolution);
+        self->params.output_resolution = limit_capture_resolution(capture_size, self->params.output_resolution);
         capture_metadata->video_size = self->params.output_resolution;
     } else {
         capture_metadata->video_size = capture_size;

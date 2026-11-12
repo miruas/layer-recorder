@@ -5,6 +5,7 @@ mod model;
 mod jobs;
 mod ipc;
 mod playback;
+mod fast_preview;
 mod voiceover;
 mod autosave;
 fn main(){if let Err(error)=app::run(){eprintln!("{error:#}");std::process::exit(1);}}

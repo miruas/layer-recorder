@@ -84,7 +84,9 @@ def main():
             ensure_daemon()
         except (OSError, RuntimeError) as error:
             print('Layer capture service: ' + str(error), file=sys.stderr)
-        os.execv(str(binary), [str(binary), 'launch-daemon'])
+        env = os.environ.copy()
+        env['PATH'] = str(APP / 'bin') + os.pathsep + env.get('PATH', os.defpath)
+        os.execve(str(binary), [str(binary), 'launch-daemon'], env)
     if args.command == "ui":
         from .ui import main as ui_main
         ui_main(args.path)

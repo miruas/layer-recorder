@@ -730,6 +730,22 @@ void setup_dma_buf_attrs(intptr_t *img_attr, uint32_t format, uint32_t width, ui
     assert(img_attr_index <= 44);
 }
 
+/* Modified by Layer on 2026-11-12: resolution limits do not manufacture pixels. */
+vec2i limit_capture_resolution(vec2i from, vec2i to) {
+    if(from.x <= 0 || from.y <= 0 || to.x <= 0 || to.y <= 0)
+        return from;
+    vec2i limited = from;
+    if(from.x > to.x || from.y > to.y)
+        limited = scale_keep_aspect_ratio(from, to);
+    /* Subsampled encoders need even dimensions. Do not round above a bound
+       or enlarge a small source; one-pixel sources retain their real size. */
+    if(limited.x > 1)
+        limited.x = limited.x / 2 * 2;
+    if(limited.y > 1)
+        limited.y = limited.y / 2 * 2;
+    return limited;
+}
+
 vec2i scale_keep_aspect_ratio(vec2i from, vec2i to) {
     if(from.x == 0 || from.y == 0)
         return (vec2i){0, 0};

@@ -35,7 +35,7 @@ from .studio_model import (
     validate,
     write_srt,
 )
-from .studio_render import export_studio
+from .studio_render import export_studio, media_fingerprint, preview_project_snapshot
 
 __all__ = ["request", "main"]
 
@@ -69,7 +69,13 @@ def _load(payload, check_sources=True):
     raw = _option(payload, "path")
     if raw in (None, ""):
         raise ValueError("This operation requires a project path.")
-    path, project = load_project(raw)
+    snapshot=payload.get("project_snapshot")
+    if snapshot is not None:
+        path=Path(raw).expanduser().resolve()
+        if path.is_dir():path=path/"project.katman"
+        project=preview_project_snapshot(path,snapshot)
+    else:
+        path, project = load_project(raw)
     path = Path(path)
     if check_sources:
         _check_sources(path, project)
@@ -118,14 +124,15 @@ def _frame(payload, progress, cancel):
     if width < 2:
         raise ValueError("The frame width must be at least 2 pixels.")
     signature = json.dumps(model, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
-    stat = path.stat()
+    project_signature = json.dumps(project, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
     key = hashlib.sha256(
         (
             str(path.resolve())
             + "\0"
-            + str(stat.st_mtime_ns)
+            + project_signature
             + "\0"
             + signature
+            + media_fingerprint(path, project, model)
             + "\0"
             + f"{position:.6f}"
             + "\0"
@@ -148,6 +155,7 @@ def _frame(payload, progress, cancel):
         model=model,
         window=(position, position + .05),
         frame=True,
+        project_snapshot=project,
     )
     if not destination.is_file() or destination.stat().st_size <= 0:
         raise RuntimeError("The preview frame could not be written.")

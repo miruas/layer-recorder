@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 from .common import APP,CACHE,load_project,settings
 from .studio_model import clip_duration,parse_srt
-from .studio_render import export_studio,run_process
+from .studio_render import export_studio,run_process,media_fingerprint
 
 
 def preview_options(model,max_width=960):
@@ -22,8 +22,9 @@ def preview_options(model,max_width=960):
 
 
 def preview_file(path,model,cancel=None,progress=None,width=960):
+    path,project=load_project(path)
     root=CACHE/'studio-previews';root.mkdir(exist_ok=True)
-    key=hashlib.sha256((str(path)+json.dumps(model,sort_keys=True)+str(width)).encode()).hexdigest()[:24];dest=root/(key+'.mp4')
+    key=hashlib.sha256((str(path)+json.dumps(model,sort_keys=True)+str(width)+media_fingerprint(path,project,model)).encode()).hexdigest()[:24];dest=root/(key+'.mp4')
     if not dest.exists():export_studio(path,dest,preview_options(model,width),progress,cancel,model=model)
     return str(dest)
 

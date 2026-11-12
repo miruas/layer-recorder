@@ -9,7 +9,7 @@ DEFAULTS = {
     'library': '~/Videos/Layer', 'fps': 60, 'bitrate': 18000, 'buffer': 300,
     'auto_replay': False, 'replay_short':60, 'replay_long':300,
     'shortcuts_enabled':True, 'shortcuts':{'ui':'Meta+Alt+Z','save-1':'Meta+Alt+F7','save-5':'Meta+Alt+F8','record':'Meta+Alt+F9','replay':'Meta+Alt+F10'}, 'gsr_sync':False, 'gsr_preferences':True, 'gsr_source':'gsr', 'gsr_config':'', 'gpu_vendor': 'auto', 'capture_backend': 'auto',
-    'capture_targets': [], 'capture_codec': 'h264', 'capture_quality': 'custom', 'render_device': 'auto', 'wf_no_dmabuf': False,
+    'capture_resolution': 'native', 'capture_targets': [], 'capture_codec': 'h264', 'capture_quality': 'custom', 'render_device': 'auto', 'wf_no_dmabuf': False,
     'export_codec': 'libx264', 'export_quality': 20,
     'gsr_binary': 'auto', 'wf_recorder_binary': '',
     'speech_binary': '', 'speech_model': '',
@@ -17,6 +17,21 @@ DEFAULTS = {
 CODECS = ('libx264','libx265','libaom-av1','h264_nvenc','hevc_nvenc','av1_nvenc','h264_vaapi','hevc_vaapi','av1_vaapi')
 CAPTURE_CODECS = ('auto','h264','hevc','hevc_10bit','hevc_hdr','av1','av1_10bit','av1_hdr')
 CAPTURE_QUALITIES = ('custom','medium','high','very_high','ultra')
+
+
+RESOLUTION_PRESETS = {'native': None, '720p': (1280, 720), '1080p': (1920, 1080),
+                      '1440p': (2560, 1440), '4k': (3840, 2160)}
+
+
+def validate_capture_resolution(value):
+    """A native/preset name or an even, bounded width/height object."""
+    if isinstance(value, str) and value in RESOLUTION_PRESETS:
+        return copy.deepcopy(value)
+    if isinstance(value, dict) and set(value) == {'width', 'height'}:
+        if all(type(value[k]) is int and 32 <= value[k] <= 32768 and value[k] % 2 == 0
+               for k in ('width', 'height')):
+            return dict(value)
+    raise ValueError('capture_resolution must be native, 720p, 1080p, 1440p, 4k, or an object with even width and height from 32 to 32768.')
 
 
 def validate_config(values):
@@ -30,6 +45,7 @@ def validate_config(values):
         if type(result[key]) is not bool:raise ValueError(key+' must be true or false.')
     for key,choices in [('gpu_vendor',('auto','nvidia','amd','intel')),('capture_backend',('auto','gsr')),('capture_codec',CAPTURE_CODECS),('capture_quality',CAPTURE_QUALITIES),('gsr_source',('gsr','layer','auto','off')),('export_codec',CODECS)]:
         if result[key] not in choices:raise ValueError(key+' must be one of: '+', '.join(choices))
+    result['capture_resolution']=validate_capture_resolution(result['capture_resolution'])
     targets=result['capture_targets']
     if not isinstance(targets,list) or len(targets)>16 or any(not isinstance(x,str) or not x or len(x)>256 or any(c in x for c in ('\n','\r','\0','|')) for x in targets):raise ValueError('capture_targets must contain at most 16 individual GSR sources.')
     if len(set(targets))!=len(targets):raise ValueError('Capture targets must be unique.')

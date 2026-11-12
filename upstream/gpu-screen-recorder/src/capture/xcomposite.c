@@ -1,3 +1,4 @@
+/* Modified by Layer on 2026-11-12: bound capture size without upscaling. */
 #include "../../include/capture/xcomposite.h"
 #include "../../include/log.h"
 #include "../../include/window_texture.h"
@@ -99,7 +100,7 @@ static int gsr_capture_xcomposite_start(gsr_capture *cap, gsr_capture_metadata *
         /* The video size has to stay the same even when the focused window changes, so it cant be based on the size of the captured window */
         capture_metadata->video_size = self->params.output_resolution;
     } else {
-        capture_metadata->video_size = scale_keep_aspect_ratio(self->texture_size, self->params.output_resolution);
+        capture_metadata->video_size = limit_capture_resolution(self->texture_size, self->params.output_resolution);
     }
 
     self->window_resize_timer = clock_get_monotonic_seconds();

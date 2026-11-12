@@ -66,7 +66,10 @@ impl Snapshot {
             recording: status["recording"].as_bool().unwrap_or(false),
             replay: status["replay"].as_bool().unwrap_or(false),
             paused: status["paused"].as_bool().unwrap_or(false),
-            can_pause: status["gsr_mode"].as_str().map(|v|v=="record").unwrap_or(status["recording"]==true&&status["replay"]!=true),
+            can_pause: status["gsr_mode"]
+                .as_str()
+                .map(|v| v == "record")
+                .unwrap_or(status["recording"] == true && status["replay"] != true),
             record_seconds: seconds("record_seconds"),
             buffer_seconds: seconds("buffer_seconds"),
         }
@@ -76,7 +79,11 @@ impl Snapshot {
         let mut parts = Vec::new();
         if self.recording {
             let label = if self.paused {
-                if compact { "Paused" } else { "Recording paused" }
+                if compact {
+                    "Paused"
+                } else {
+                    "Recording paused"
+                }
             } else if compact {
                 "Rec"
             } else {
@@ -111,58 +118,78 @@ impl Snapshot {
 }
 
 /// Record/replay group. Pause is only offered while a regular recording exists.
-pub fn controls(ui: &mut egui::Ui, state: &Snapshot, durations: [u64;2]) -> Option<Action> {
+pub fn controls(ui: &mut egui::Ui, state: &Snapshot, durations: [u64; 2]) -> Option<Action> {
     let mut action = None;
 
-    let record_label = if state.recording { "Stop" } else { "Record" };
-    let record = button(ui, record_label, state.recording).on_hover_text(
-        "Start or stop recording in GPU Screen Recorder.",
-    );
+    let record_label = if state.recording {
+        "Stop recording"
+    } else {
+        "Record"
+    };
+    let record = button(ui, record_label, state.recording)
+        .on_hover_text("Start or stop recording in GPU Screen Recorder.");
     if record.clicked() {
         action = Some(Action::ToggleRecord);
     }
 
-    let replay_label = if state.replay { "Stop replay" } else { "Replay" };
-    let replay = button(ui, replay_label, false).on_hover_text(
-        "Start or stop the GPU Screen Recorder replay buffer.",
-    );
+    let replay_label = if state.replay {
+        "Stop replay"
+    } else {
+        "Replay"
+    };
+    let replay = button(ui, replay_label, false)
+        .on_hover_text("Start or stop the GPU Screen Recorder replay buffer.");
     if replay.clicked() {
         action = Some(Action::ToggleReplay);
     }
 
-    let replay_label=|seconds:u64| if seconds % 60==0 {format!("Save {} min",seconds/60)}else{format!("Save {seconds} s")};
-    let short = ui
-        .add_enabled(
-            state.replay,
-            egui::Button::new(replay_label(durations[0])).min_size(Vec2::new(0., 32.)),
-        )
-        .on_hover_text("Save the configured short replay from GPU Screen Recorder.")
-        .on_disabled_hover_text("Enable the replay buffer first.");
-    if short.clicked() {
-        action = Some(Action::SaveShort);
+    if state.replay {
+        let replay_label = |seconds: u64| {
+            if seconds % 60 == 0 {
+                format!("Save {} min", seconds / 60)
+            } else {
+                format!("Save {seconds} s")
+            }
+        };
+        let short = ui
+            .add_enabled(
+                state.replay,
+                egui::Button::new(replay_label(durations[0])).min_size(Vec2::new(0., 32.)),
+            )
+            .on_hover_text("Save the configured short replay from GPU Screen Recorder.")
+            .on_disabled_hover_text("Enable the replay buffer first.");
+        if short.clicked() {
+            action = Some(Action::SaveShort);
+        }
+
+        let long = ui
+            .add_enabled(
+                state.replay,
+                egui::Button::new(replay_label(durations[1])).min_size(Vec2::new(0., 32.)),
+            )
+            .on_hover_text("Save the configured long replay from GPU Screen Recorder.")
+            .on_disabled_hover_text("Enable the replay buffer first.");
+        if long.clicked() {
+            action = Some(Action::SaveLong);
+        }
     }
 
-    let long = ui
-        .add_enabled(
-            state.replay,
-            egui::Button::new(replay_label(durations[1])).min_size(Vec2::new(0., 32.)),
-        )
-        .on_hover_text("Save the configured long replay from GPU Screen Recorder.")
-        .on_disabled_hover_text("Enable the replay buffer first.");
-    if long.clicked() {
-        action = Some(Action::SaveLong);
-    }
-
-    let pause_label = if state.recording && state.paused { "Resume" } else { "Pause" };
-    let pause = ui
+    if state.recording {
+        let pause_label = if state.recording && state.paused {
+            "Resume"
+        } else {
+            "Pause"
+        };
+        let pause = ui
         .add_enabled(
             state.recording && state.can_pause,
             egui::Button::new(pause_label).min_size(Vec2::new(0., 32.)),
         )
         .on_hover_text("Pause or resume recording. Replay keeps buffering; Layer keeps original source media and omits paused time from the edited recording.")
         .on_disabled_hover_text("Available for regular recording. GSR cannot pause a recording inside replay or streaming.");
-    if pause.clicked() {
-        action = Some(Action::TogglePause);
+        if pause.clicked() {
+            action = Some(Action::TogglePause);
+        }
     }
 
     action
@@ -231,6 +258,10 @@ pub fn capture_menu(ui: &mut egui::Ui) -> Option<Action> {
             action = Some(Action::GsrSettings);
             ui.close();
         }
+        if ui.button("Refresh capture status").clicked() {
+            action = Some(Action::Status);
+            ui.close();
+        }
         ui.separator();
         ui.label(
             RichText::new("Capture controls use GPU Screen Recorder. Tracks remain separately editable.")
@@ -243,9 +274,11 @@ pub fn capture_menu(ui: &mut egui::Ui) -> Option<Action> {
 
 pub fn hint(ui: &mut egui::Ui) {
     ui.label(
-        RichText::new("Capture controls use GPU Screen Recorder. Tracks remain separately editable.")
-            .small()
-            .color(ui.visuals().weak_text_color()),
+        RichText::new(
+            "Capture controls use GPU Screen Recorder. Tracks remain separately editable.",
+        )
+        .small()
+        .color(ui.visuals().weak_text_color()),
     );
 }
 

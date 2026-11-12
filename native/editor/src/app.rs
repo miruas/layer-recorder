@@ -78,6 +78,11 @@ struct Studio {
     job_context:BTreeMap<u64,(PathBuf,u64)>,
     frame_due: Option<Instant>,
     texture: Option<egui::TextureHandle>,
+    fast_cache: crate::fast_preview::Cache,
+    fast_scene: Option<crate::fast_preview::Scene>,
+    fast_key: Option<(u64,u64)>,
+    library_open: bool,
+    properties_open: bool,
     frame_revision: u64,
     waveforms:BTreeMap<String,(f64,Vec<f32>)>,
     preview: Option<(u64, String)>,
@@ -227,6 +232,11 @@ impl Studio {
             job_context:BTreeMap::new(),
             frame_due: None,
             texture: None,
+            fast_cache: crate::fast_preview::Cache::new(),
+            fast_scene: None,
+            fast_key: None,
+            library_open: true,
+            properties_open: false,
             frame_revision: u64::MAX,
             waveforms:BTreeMap::new(),
             preview: None,
@@ -406,6 +416,8 @@ impl Studio {
                 self.waveforms.clear();
                 let id=self.jobs.start_after(&self.root,"waveforms",json!({"path":doc.path}),self.saver.barrier(doc.path.clone()));self.job_context.insert(id,(doc.path.clone(),doc.revision));
                 self.document = Some(doc);
+                self.fast_cache.clear();self.fast_scene=None;self.fast_key=None;
+                self.library_open=false;
                 self.frame_due = Some(Instant::now() + Duration::from_millis(150));
             }
             Err(e) => self.error = format!("Could not open this recording: {e:#}"),
@@ -488,11 +500,13 @@ impl Studio {
     }
     fn changed(&mut self) {
         self.playback = None;
+        if let Some((id,_,_))=self.frame_job.take(){self.jobs.cancel(id);self.job_context.remove(&id);}
+        self.frame_revision=u64::MAX;
         self.preview = None;
         if let Some(doc) = &self.document {
             self.saver.submit(doc.path.clone(), doc.project.clone(), doc.model.clone(), doc.revision);
         }
-        self.frame_due = Some(Instant::now() + Duration::from_millis(140));
+        self.frame_due = Some(Instant::now() + Duration::from_millis(35));
     }
     fn save_events(&mut self, ctx: &egui::Context) {
         for event in self.saver.results.try_iter().collect::<Vec<_>>() {
@@ -575,16 +589,34 @@ impl Studio {
             self.job_context.insert(id,(doc.path.clone(),doc.revision));
         }
     }
+    fn refresh_fast_scene(&mut self,ctx:&egui::Context) {
+        self.fast_cache.poll(ctx);
+        if self.playback.is_some(){return;}
+        if let Some(doc)=&self.document{
+            let key=(doc.revision,doc.position.to_bits());
+            if self.fast_key!=Some(key){
+                self.fast_scene=crate::fast_preview::scene(&doc.path,&doc.project,&doc.model,doc.position);
+                self.fast_key=Some(key);
+                if let Some(scene)=&self.fast_scene{self.fast_cache.request(scene);}
+            }
+            if let Some(scene)=&self.fast_scene{
+                if self.fast_cache.failed(scene){self.fast_scene=None;self.frame_due=Some(Instant::now());}
+                else if !self.fast_cache.ready(scene){ctx.request_repaint_after(Duration::from_millis(8));}
+            }
+        }
+    }
     fn queue_frame(&mut self) {
+        if self.output_frame.is_none() && self.fast_scene.is_some(){self.frame_due=None;return;}
         if self.frame_job.is_some() {
             return;
         }
         if let Some(doc) = &self.document {
-            let id = self.jobs.start_after(
+            let mut project=doc.project.clone();
+            if let Some(object)=project.as_object_mut(){object.remove("studio");}
+            let id = self.jobs.start(
                 &self.root,
                 "frame",
-                json!({"path":doc.path,"model":doc.model,"position":doc.position,"width":960}),
-                self.saver.barrier(doc.path.clone()),
+                json!({"path":doc.path,"project_snapshot":project,"model":doc.model,"position":doc.position,"width":960}),
             );
             self.job_context.insert(id,(doc.path.clone(),doc.revision));
             self.frame_job = Some((id, doc.revision, doc.position));
@@ -855,33 +887,28 @@ impl Studio {
             }
         }
         if let Some(playback) = &mut self.playback {
+            if let Some(message)=playback.diagnostics.try_iter().last(){self.error=format!("Preview: {message}");}
             let mut latest = None;
             for frame in playback.frames.try_iter() {
                 latest = Some(frame);
             }
             if let Some(frame) = latest {
-                self.texture = Some(ctx.load_texture(
-                    "Playing",
-                    egui::ColorImage::from_rgba_unmultiplied(
-                        [frame.width, frame.height],
-                        &frame.rgba,
-                    ),
-                    egui::TextureOptions::LINEAR,
-                ));
+                let image=egui::ColorImage::from_rgba_unmultiplied([frame.width,frame.height],&frame.rgba);
+                if let Some(texture)=&mut self.texture{texture.set(image,egui::TextureOptions::LINEAR);}else{self.texture=Some(ctx.load_texture("Playing",image,egui::TextureOptions::LINEAR));}
                 if let Some(doc) = &mut self.document {
                     doc.position = frame.time;
                 }
             }
             if let Some(doc) = &self.document {
-                if doc.position >= model::duration(&doc.model) - 0.05 {
+                if doc.position >= model::duration(&doc.model) - 0.05 || self.playback.as_ref().is_some_and(|p|p.finished.load(std::sync::atomic::Ordering::Acquire)) {
                     self.playback = None;
                 }
             }
             ctx.request_repaint_after(Duration::from_millis(15));
         }
+        self.refresh_fast_scene(ctx);
         if self.frame_due.is_some_and(|time| Instant::now() >= time)
             && self.playback.is_none()
-            && !self.jobs.busy()
         {
             self.queue_frame();
         }
@@ -898,75 +925,30 @@ impl Studio {
         }
     }
     fn toolbar(&mut self, ctx: &egui::Context) {
-        let compact = ctx.viewport_rect().width() < 1250.;
-        let narrow = ctx.viewport_rect().width() < 900.;
-        let state = CaptureState::from_status(&self.status);
-        let mut action = None;
-        let mut preferences = false;
-        egui::TopBottomPanel::top("recording")
-            .exact_height(68.)
-            .show(ctx, |ui| {
-                ui.add_space(8.);
-                ui.horizontal(|ui| {
-                    ui.add_space(10.);
-                    ui.label(RichText::new(if compact {"Layer editor"} else {"GPU Screen Recorder"}).size(if compact {18.}else{16.}).strong());
-                    if !compact {
-                        ui.label(
-                            RichText::new("Layer editor")
-                                .small()
-                                .color(ui.visuals().weak_text_color()),
-                        )
-                        .on_hover_text(
-                            "GPU Screen Recorder captures. Layer archives and edits the saved recordings.",
-                        );
-                    }
-                    ui.add_space(10.);
-                    ui.separator();
-                    let capture_enabled = !self.gsr_busy;
-                    ui.add_enabled_ui(capture_enabled, |ui| {
-                        if let Some(chosen) = gsr_controls::controls(ui, &state, [self.cfg["replay_short"].as_u64().unwrap_or(60),self.cfg["replay_long"].as_u64().unwrap_or(300)]) {
-                            action = Some(chosen);
-                        }
-                        if let Some(chosen) = gsr_controls::capture_menu(ui) {
-                            action = Some(chosen);
-                        }
+        let compact=ctx.viewport_rect().width()<1000.;let state=CaptureState::from_status(&self.status);let mut action=None;
+        egui::TopBottomPanel::top("recording").exact_height(52.).show(ctx,|ui|{
+            ui.add_space(6.);ui.horizontal(|ui|{
+                ui.add_space(8.);ui.label(RichText::new(if compact {"Layer"}else{"Layer editor"}).size(18.).strong());ui.add_space(12.);
+                if ui.selectable_label(self.library_open||self.document.is_none(),"Recordings").on_hover_text("Browse your recordings").clicked(){self.library_open=!self.library_open;}
+                ui.separator();
+                ui.add_enabled_ui(!self.gsr_busy,|ui|{
+                    ui.menu_button("Record & replay",|ui|{
+                        ui.set_min_width(230.);
+                        if let Some(chosen)=gsr_controls::controls(ui,&state,[self.cfg["replay_short"].as_u64().unwrap_or(60),self.cfg["replay_long"].as_u64().unwrap_or(300)]){action=Some(chosen);ui.close();}
                     });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .button("Preferences")
-                            .on_hover_text("Library location and Layer preferences.")
-                            .clicked()
-                        {
-                            preferences = true;
-                        }
-                        if !narrow {
-                            ui.label(
-                                RichText::new(state.summary(compact))
-                                    .small()
-                                    .color(state.tone(ui)),
-                            );
-                            if self.gsr_running == Some(false) {
-                                ui.label(
-                                    RichText::new("GSR not running")
-                                        .small()
-                                        .color(ui.visuals().weak_text_color()),
-                                )
-                                .on_hover_text(
-                                    "GPU Screen Recorder is not reachable. Capture controls show an error until it is running.",
-                                );
-                            }
-                        }
-                    });
+                    if let Some(chosen)=gsr_controls::capture_menu(ui){action=Some(chosen);}
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+                    if ui.button("Preferences").clicked(){self.settings_open=!self.settings_open;}
+                    if self.document.is_some()&&ui.selectable_label(self.properties_open,"Properties").on_hover_text("Clip timing, picture, audio and effects").clicked(){self.properties_open=!self.properties_open;}
+                    if !compact{ui.label(RichText::new(state.summary(true)).small().color(state.tone(ui)));}
                 });
             });
-        if preferences {
-            self.settings_open = !self.settings_open;
-        }
-        if let Some(chosen) = action {
-            self.gsr(chosen);
-        }
+        });
+        if let Some(chosen)=action{self.gsr(chosen);}
     }
     fn archive(&mut self, ctx: &egui::Context) {
+        if self.document.is_some() && !self.library_open{return;}
         egui::SidePanel::left("library")
             .default_width(if ctx.viewport_rect().width()<1100. {200.}else{250.})
             .min_width(205.)
@@ -1073,20 +1055,18 @@ impl Studio {
                 );
             }
             ui.separator();
-            for (label, op) in [
-                ("Import…", "append"),
-                ("Overlay…", "overlay"),
-                ("Undo", "undo"),
-                ("Redo", "redo"),
-                ("Split", "split"),
-                ("Remove", "delete"),
-            ] {
-                if ui.button(label).clicked() {
-                    operation = Some(op);
-                }
-            }
-            ui.menu_button("Tools",|ui|{
+            ui.menu_button("Add media",|ui|{
+                if ui.button("Append recording…").clicked(){operation=Some("append");ui.close();}
+                if ui.button("Overlay media…").clicked(){operation=Some("overlay");ui.close();}
                 if ui.button("Record voiceover…").clicked(){operation=Some("voiceover");ui.close();}
+            });
+            ui.menu_button("Edit",|ui|{
+                for(label,op)in[("Undo","undo"),("Redo","redo"),("Remove selected","delete")]{if ui.button(label).clicked(){operation=Some(op);ui.close();}}
+            });
+            if ui.add_enabled(self.document.as_ref().is_some_and(|d|!d.selected.is_empty()),egui::Button::new("Split")).clicked(){operation=Some("split");}
+            ui.menu_button("Tools",|ui|{
+                if ui.button("Build source proxies…").clicked(){operation=Some("proxies");ui.close();}
+                if ui.button("Save current frame…").clicked(){operation=Some("save_frame");ui.close();}
                 ui.separator();
                 ui.add(egui::DragValue::new(&mut self.crossfade_seconds).range(0.04..=30.).speed(0.05).prefix("Crossfade ").suffix(" s"));
                 if ui.add_enabled(self.document.as_ref().is_some_and(|d|d.selected.len()==2),egui::Button::new("Crossfade selected clips")).clicked(){operation=Some("crossfade");ui.close();}
@@ -1099,6 +1079,8 @@ impl Studio {
         });
         if let Some(op) = operation {
             if op=="voiceover"{self.open_voiceover();return;}
+            if op=="proxies"{self.media_job("proxies",json!({}));return;}
+            if op=="save_frame"{self.choose("frame",true);return;}
             if op == "append" || op == "overlay" {
                 self.choose(op, false);
             } else if let Some(doc) = &mut self.document {
@@ -1127,17 +1109,11 @@ impl Studio {
         let Some(doc) = &self.document else {
             return;
         };
-        if let Some((revision, file)) = &self.preview {
-            if *revision == doc.revision {
-                match Playback::start(file, doc.position, [number(&doc.model,"width",1920.) as u32,number(&doc.model,"height",1080.) as u32]) {
-                    Ok(play) => self.playback = Some(play),
-                    Err(e) => self.error = e.to_string(),
-                };
-                return;
-            }
+        let position=if doc.position>=model::duration(&doc.model)-0.04{0.}else{doc.position};
+        match Playback::start_timeline(&self.root,&doc.path,&doc.model,&doc.project,position,[number(&doc.model,"width",1920.)as u32,number(&doc.model,"height",1080.)as u32]){
+            Ok(player)=>{self.playback=Some(player);self.want_play=false;},
+            Err(error)=>self.error=error.to_string(),
         }
-        self.want_play = true;
-        self.media_job("preview", json!({"width":960}));
     }
     fn canvas(&mut self, ui: &mut egui::Ui) {
         self.editing_bar(ui);
@@ -1159,7 +1135,11 @@ impl Studio {
         let rect = Rect::from_center_size(outer.center(), size);
         ui.painter()
             .rect_filled(outer, 0., Color32::from_rgb(10, 12, 14));
-        if let Some(texture) = &self.texture {
+        if self.playback.is_none() && self.fast_scene.is_some() {
+            let scene=self.fast_scene.as_ref().unwrap();
+            self.fast_cache.paint(ui.painter(),rect,canvas_size,scene);
+            if !self.fast_cache.ready(scene){ui.painter().text(rect.center(),egui::Align2::CENTER_CENTER,"Loading source frame…",egui::FontId::proportional(14.),ui.visuals().text_color());}
+        } else if let Some(texture) = &self.texture.as_ref().filter(|_|self.playback.is_some()||self.frame_revision==doc.revision) {
             ui.painter().image(
                 texture.id(),
                 rect,
@@ -1283,31 +1263,25 @@ impl Studio {
                     .changed()
                 {
                     self.playback = None;
-                    self.frame_due = Some(Instant::now() + Duration::from_millis(90));
+                    self.frame_due = Some(Instant::now() + Duration::from_millis(25));
                 }
                 ui.label(format!("{} / {}", timecode(doc.position), timecode(span)));
             }
         });
         ui.horizontal_wrapped(|ui| {
-            for tool in [
-                "Select",
-                "Pen",
-                "Line",
-                "Arrow",
-                "Rectangle",
-                "Blackout",
-                "Blur",
-                "Pixelate",
-            ] {
-                ui.selectable_value(&mut self.tool, tool.into(), tool);
+            ui.selectable_value(&mut self.tool,"Select".into(),"Select");
+            let draw_label=if ["Pen","Line","Arrow","Rectangle"].contains(&self.tool.as_str()){self.tool.clone()}else{"Draw".into()};
+            ui.menu_button(draw_label,|ui|{
+                for tool in ["Pen","Line","Arrow","Rectangle"]{if ui.selectable_value(&mut self.tool,tool.into(),tool).clicked(){ui.close();}}
+            });
+            let privacy_label=if ["Blackout","Blur","Pixelate"].contains(&self.tool.as_str()){self.tool.clone()}else{"Privacy".into()};
+            ui.menu_button(privacy_label,|ui|{
+                for tool in ["Blackout","Blur","Pixelate"]{if ui.selectable_value(&mut self.tool,tool.into(),tool).clicked(){ui.close();}}
+            });
+            if ["Pen","Line","Arrow","Rectangle"].contains(&self.tool.as_str()){
+                ui.color_edit_button_srgb(&mut self.ink);
+                ui.add(egui::DragValue::new(&mut self.ink_width).speed(0.001).range(0.001..=0.1).prefix("Stroke "));
             }
-            ui.color_edit_button_srgb(&mut self.ink);
-            ui.add(
-                egui::DragValue::new(&mut self.ink_width)
-                    .speed(0.001)
-                    .range(0.001..=0.1)
-                    .prefix("Width "),
-            );
         });
     }
     fn timeline(&mut self, ctx: &egui::Context) {
@@ -1316,7 +1290,7 @@ impl Studio {
         }
         egui::TopBottomPanel::bottom("timeline")
             .resizable(true)
-            .default_height(215.)
+            .default_height(185.)
             .min_height(140.)
             .show(ctx, |ui| {
                 ui.add_space(7.);
@@ -1336,13 +1310,13 @@ impl Studio {
                 let mut changed = false;
                 let mut selected = None;
                 let mut drag = None;
+                let mut track_changes=vec![];let mut begin_drag=false;
                 egui::ScrollArea::both().show(ui, |ui| {
                     let (ruler,r)=ui.allocate_exact_size(Vec2::new(label_width+width+8.,24.),Sense::click_and_drag());
                     let ticks=(6.*self.timeline_zoom).ceil() as usize;
-                    for tick in 0..=ticks{let x=ruler.left()+label_width+width*tick as f32/ticks as f32;ui.painter().text(Pos2::new(x,ruler.center().y),egui::Align2::LEFT_CENTER,timecode(total*tick as f64/ticks as f64),egui::FontId::proportional(11.),Color32::from_gray(174));}
+                    for tick in 0..=ticks{let x=ruler.left()+label_width+width*tick as f32/ticks as f32;ui.painter().text(Pos2::new(x,ruler.center().y),if tick==ticks{egui::Align2::RIGHT_CENTER}else{egui::Align2::LEFT_CENTER},timecode(total*tick as f64/ticks as f64),egui::FontId::proportional(11.),Color32::from_gray(174));}
                     if (r.clicked()||r.dragged())&&let Some(point)=r.interact_pointer_pos(){doc.position=((point.x-ruler.left()-label_width)/px).max(0.).min(total as f32) as f64;self.playback=None;self.frame_due=Some(Instant::now());}
-                    let tracks = doc.model["tracks"].as_array().cloned().unwrap_or_default();
-                    for track in tracks {
+                    for track in doc.model["tracks"].as_array().into_iter().flatten() {
                         let (rect, _) = ui.allocate_exact_size(
                             Vec2::new(label_width+width+8., 42.),
                             Sense::hover(),
@@ -1355,20 +1329,12 @@ impl Studio {
                             track["mute"] != true
                         };
                         let check = Rect::from_min_size(rect.min, Vec2::new(label_width - 8., 40.));
-                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(check), |ui| {
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(check), |ui| {
                             if ui
                                 .checkbox(&mut enabled, track["name"].as_str().unwrap_or("Source"))
                                 .changed()
                             {
-                                doc.checkpoint();
-                                if let Some(t) = doc.model["tracks"]
-                                    .as_array_mut()
-                                    .and_then(|t| t.iter_mut().find(|t| t["id"] == id))
-                                {
-                                    t[if video { "visible" } else { "mute" }] =
-                                        json!(if video { enabled } else { !enabled });
-                                    changed = true;
-                                }
+                                track_changes.push((id.to_string(),video,enabled));
                             }
                         });
                         let bar = Rect::from_min_size(
@@ -1384,6 +1350,7 @@ impl Studio {
                                 Pos2::new(left, bar.top()),
                                 Vec2::new((model::clip_duration(clip) as f32 * px).max(8.), 32.),
                             );
+                            if !clip_rect.intersects(ui.clip_rect()){continue;}
                             let is_selected = doc.selected.contains(cid);
                             let color = if video {
                                 Color32::from_rgb(59, 91, 108)
@@ -1392,7 +1359,9 @@ impl Studio {
                             };
                             ui.painter().rect_filled(clip_rect, 4., color);
                             if !video&&let Some((seconds,peaks))=self.waveforms.get(clip["source_id"].as_str().unwrap_or("")){
-                                for pixel in (2..(clip_rect.width().max(4.) as usize)).step_by(3){
+                                let first=(ui.clip_rect().left()-clip_rect.left()).max(2.)as usize;
+                                let last=(ui.clip_rect().right()-clip_rect.left()).min(clip_rect.width()).max(4.)as usize;
+                                for pixel in (first..last).step_by(3){
                                     let local=pixel as f64/px as f64;let source_time=model::source_offset(clip,local);
                                     let index=(source_time/seconds*peaks.len() as f64).max(0.) as usize;
                                     let amplitude=peaks.get(index).copied().unwrap_or(0.);let height=(amplitude*12.).clamp(0.5,12.);let x=clip_rect.left()+pixel as f32;
@@ -1403,7 +1372,7 @@ impl Studio {
                                 ui.painter().rect_stroke(
                                     clip_rect,
                                     4.,
-                                    Stroke::new(2., Color32::from_rgb(194, 221, 214)),
+                                    Stroke::new(2_f32, Color32::from_rgb(194, 221, 214)),
                                     egui::StrokeKind::Inside,
                                 );
                             }
@@ -1416,11 +1385,12 @@ impl Studio {
                             );
                             let r =
                                 ui.interact(clip_rect, ui.id().with(cid), Sense::click_and_drag());
+                            if r.double_clicked(){self.properties_open=true;}
                             if r.clicked() {
                                 selected = Some((cid.to_string(), ui.input(|i| i.modifiers.ctrl)));
                             }
                             if r.drag_started() {
-                                doc.checkpoint();
+                                begin_drag=true;
                                 selected = Some((cid.to_string(), false));
                                 self.drag_origin =
                                     Some(vec![(cid.into(), number(clip, "start", 0.))]);
@@ -1443,10 +1413,16 @@ impl Studio {
                                 Pos2::new(x, bar.top() - 4.),
                                 Pos2::new(x, bar.bottom() + 4.),
                             ],
-                            Stroke::new(1.5, Color32::from_rgb(237, 226, 183)),
+                            Stroke::new(1.5_f32, Color32::from_rgb(237, 226, 183)),
                         );
                     }
                 });
+                if begin_drag||!track_changes.is_empty(){doc.checkpoint();}
+                for(id,video,enabled)in track_changes{
+                    if let Some(track)=doc.model["tracks"].as_array_mut().and_then(|xs|xs.iter_mut().find(|t|t["id"]==id)){
+                        track[if video{"visible"}else{"mute"}]=json!(if video{enabled}else{!enabled});changed=true;
+                    }
+                }
                 if let Some((id, multi)) = selected {
                     if !multi {
                         doc.selected.clear();
@@ -1478,7 +1454,7 @@ impl Studio {
             });
     }
     fn inspector(&mut self, ctx: &egui::Context) {
-        if self.document.is_none() {
+        if !self.properties_open || self.document.is_none() {
             return;
         }
         let mut action = crate::inspector::Action::None;

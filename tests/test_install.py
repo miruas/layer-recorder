@@ -81,3 +81,40 @@ class UserInstallation(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     installer.main()
             self.assertEqual(autostart.read_bytes(), before)
+
+class BundledRecorderPath(unittest.TestCase):
+    def test_launcher_prefers_bundled_recorder_and_retains_path_fallback(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, fallback = root/'source with spaces', root/'system-bin'
+            source.mkdir(); fallback.mkdir(); (source/'bin').mkdir()
+            shutil.copy2(Path(__file__).resolve().parents[1]/'run.sh', source/'run.sh')
+            probe = root/'probe-python'
+            probe.write_text('#!/bin/sh\ncommand -v gpu-screen-recorder\n')
+            probe.chmod(0o755)
+            bundled, system = source/'bin/gpu-screen-recorder', fallback/'gpu-screen-recorder'
+            for binary in (bundled, system):
+                binary.write_text('#!/bin/sh\nexit 0\n'); binary.chmod(0o755)
+            env = dict(os.environ, PATH=str(fallback)+':/usr/bin:/bin', LAYER_PYTHON=str(probe))
+            self.assertEqual(subprocess.check_output(['sh', str(source/'run.sh'), 'overlay'], env=env, text=True).strip(), str(bundled))
+            bundled.unlink()
+            self.assertEqual(subprocess.check_output(['sh', str(source/'run.sh'), 'overlay'], env=env, text=True).strip(), str(system))
+
+    def test_overlay_service_uses_bundled_engine_before_system_programs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, home, config, data = root/'source with spaces', root/'home', root/'config', root/'data'
+            home.mkdir(); (source/'overlay/bin').mkdir(parents=True)
+            (source/'overlay/bin/gsr-ui').write_text('test helper')
+            (config/'systemd/user').mkdir(parents=True)
+            (config/'systemd/user/gsr-ui.service').write_text('[Service]\nExecStart=/usr/bin/gsr-ui\n')
+            with patch.object(installer, 'ROOT', source), patch.object(Path, 'home', return_value=home), \
+                 patch.dict(os.environ, {'XDG_CONFIG_HOME':str(config), 'XDG_DATA_HOME':str(data)}), \
+                 patch.object(installer.shutil, 'which', return_value=None), \
+                 patch.object(installer.subprocess, 'run', return_value=subprocess.CompletedProcess([],0,'','')), \
+                 patch.object(sys,'argv',['install.py','--overlay']):
+                installer.main()
+            expected = 'Environment='+installer.systemd_quote('PATH='+str(source/'bin')+':'+str(home/'.local/bin')+':/usr/local/bin:/usr/bin:/bin')
+            self.assertIn(expected, (config/'systemd/user/gsr-ui.service.d/layer.conf').read_text())
+            self.assertIn(expected, (config/'systemd/user/katman.service').read_text())
