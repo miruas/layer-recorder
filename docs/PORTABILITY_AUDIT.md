@@ -56,6 +56,6 @@ The VM candidate was tested before the latest voiceover, batch-export and timeli
 2. Exercise direct and portal capture on physical NVIDIA, AMD and Intel systems across X11, GNOME Wayland, KDE Wayland and a wlroots compositor.
 3. Verify host-helper authorization and global shortcuts from a system-installed Flatpak, not only an editor-only user installation.
 4. Keep HDR color-management limitations explicit; do not equate codec passthrough with HDR editor parity.
-5. Add direct display hotplug, broader native Wayland identity/layout adapters and independent portal shortcuts only when they can preserve the fallback and privacy guarantees.
+5. Direct display hotplug now reconciles GSR inventory in a background worker, preserving older source generations. Broader native Wayland identity/layout adapters and independent portal shortcuts remain future work and must preserve the fallback and privacy guarantees.
 
 A distribution may run the common Flatpak runtime while a particular capture source remains unavailable because of GSR, drivers, permissions or portal support. That is the support boundary, rather than a promise that all host/session combinations were tested.

@@ -14,9 +14,12 @@ pub struct Platform {
 }
 impl Platform {
     pub fn new(root: &Path) -> Result<Self> {
+        Self::module(root, "katman.native_platform")
+    }
+    pub fn module(root: &Path, module: &str) -> Result<Self> {
         let python = std::env::var("LAYER_PYTHON").unwrap_or_else(|_| "python3".into());
         let mut child = Command::new(python)
-            .args(["-m", "katman.native_platform"])
+            .args(["-m", module])
             .env("PYTHONPATH", root)
             .current_dir(root)
             .stdin(Stdio::piped())
@@ -33,7 +36,10 @@ impl Platform {
         })
     }
     pub fn call(&mut self, op: &str) -> Result<Value> {
-        serde_json::to_writer(&mut self.input, &json!({"op":op}))?;
+        self.call_with(op, Value::Null)
+    }
+    pub fn call_with(&mut self, op: &str, config: Value) -> Result<Value> {
+        serde_json::to_writer(&mut self.input, &json!({"op":op,"config":config}))?;
         self.input.write_all(b"\n")?;
         self.input.flush()?;
         let mut line = String::new();

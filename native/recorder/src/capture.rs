@@ -20,6 +20,7 @@ pub struct Recorder {
     pub running: bool,
     pub replay: bool,
     pub record_start: Option<f64>,
+    recording_timeline: crate::recording_timeline::RecordingTimeline,
     pub origin: f64,
     pub tracks: Vec<Track>,
     pub errors: Vec<String>,
@@ -38,6 +39,15 @@ pub struct Recorder {
     identity: Value,
     last_identity: f64,
     last_spawn: BTreeMap<String, f64>,
+    last_video_poll: f64,
+    video_retries: BTreeMap<String, (u32, f64)>,
+    video_generations: BTreeMap<String, u64>,
+    video_inventory_error: String,
+    inventory: Option<crate::video_inventory::Inventory>,
+    application_root: PathBuf,
+    capabilities: Value,
+    gsr_mode: &'static str,
+    gsr_recording: bool,
 }
 impl Recorder {
     pub fn new(root: &Path, cache: PathBuf) -> Result<Self> {
@@ -47,6 +57,7 @@ impl Recorder {
             running: false,
             replay: false,
             record_start: None,
+            recording_timeline: Default::default(),
             origin: 0.,
             tracks: vec![],
             errors: vec![],
@@ -65,6 +76,15 @@ impl Recorder {
             identity: json!({"application":"Desktop","shortcut_error":""}),
             last_identity: 0.,
             last_spawn: BTreeMap::new(),
+            last_video_poll: 0.,
+            video_retries: BTreeMap::new(),
+            video_generations: BTreeMap::new(),
+            video_inventory_error: String::new(),
+            inventory: None,
+            application_root: root.to_path_buf(),
+            capabilities: Value::Null,
+            gsr_mode: "unknown",
+            gsr_recording: false,
         })
     }
     pub fn autostart(&self) -> bool {
@@ -87,7 +107,7 @@ impl Recorder {
                 meta
             })
             .collect();
-        json!({"engine":"rust-gsr","protocol_version":1,"running":self.running,"replay":self.replay,"recording":self.record_start.is_some(),"buffer_storage":"ram","buffer_directory":self.root,"buffer_seconds":elapsed.min(self.buffer_limit).max(0.),"record_seconds":self.record_start.map(|start|(elapsed-start).max(0.)).unwrap_or(0.),"sources":sources,"audio_mode":self.audio_mode,"warnings":self.warnings,"errors":self.errors.iter().rev().take(10).rev().collect::<Vec<_>>(),"last_project":self.last_project,"cache_bytes":self.tracks.iter().map(Track::cache_bytes).sum::<u64>(),"shortcut_error":self.identity["shortcut_error"],"integrations":self.identity["integrations"]})
+        json!({"engine":"rust-gsr","protocol_version":1,"gsr_mode":self.gsr_mode,"running":self.running,"replay":self.replay,"recording":self.record_start.is_some(),"buffer_storage":"ram","buffer_directory":self.root,"buffer_seconds":elapsed.min(self.buffer_limit).max(0.),"paused":self.record_start.is_some() && self.recording_timeline.paused(),"record_seconds":self.record_start.map(|start|self.recording_timeline.duration(start,elapsed)).unwrap_or(0.),"sources":sources,"audio_mode":self.audio_mode,"warnings":self.warnings,"display_inventory_error":self.video_inventory_error,"errors":self.errors.iter().rev().take(10).rev().collect::<Vec<_>>(),"last_project":self.last_project,"cache_bytes":self.tracks.iter().map(Track::cache_bytes).sum::<u64>(),"shortcut_error":self.identity["shortcut_error"],"integrations":self.identity["integrations"]})
     }
     pub(crate) fn error(&mut self, error: String) {
         if self.errors.last() != Some(&error) {
@@ -112,6 +132,7 @@ impl Recorder {
         }
         let plan = self.platform.call(if mode == "record" { "plan-record" } else { "plan" })?;
         self.config = plan["config"].clone();
+        self.capabilities = plan["capabilities"].clone();
         self.program = plan["program"].as_str().context("GSR program")?.into();
         self.buffer_limit = self.config["buffer"].as_f64().context("Buffer duration")?;
         self.errors.clear();
@@ -120,6 +141,10 @@ impl Recorder {
         self.monitor = if self.audio_mode == "pipewire" { Some(Monitor::new()?) } else { None };
         self.tracks.clear();
         self.last_spawn.clear();
+        self.video_retries.clear();
+        self.video_generations.clear();
+        self.video_inventory_error.clear();
+        self.last_video_poll = now();
         self.root = Some(buffer_storage::create()?);
         self.archive = Some(self.cache.join(format!(
                 "recording-{}",
@@ -139,11 +164,16 @@ impl Recorder {
                     .iter()
                     .map(|v| v.as_str().unwrap_or("").to_string())
                     .collect();
+                let meta = if p["meta"]["type"] == "video" {
+                    let spec = crate::hotplug::DisplaySpec::from_value(p)?;
+                    self.video_generations.insert(spec.key.clone(), 1);
+                    spec.stamped_meta(1)
+                } else { p["meta"].clone() };
                 let mut track = Track::spawn(
                     self.root.as_ref().unwrap(),
                     self.origin,
                     p["key"].as_str().context("Track key")?.into(),
-                    p["meta"].clone(),
+                    meta,
                     &command,
                     p["selector"].as_str().unwrap_or("").into(),
                 )?;
@@ -182,6 +212,8 @@ impl Recorder {
                 thread::sleep(Duration::from_millis(50));
             }
             self.running = true;
+            let is_static=self.config["capture_targets"].as_array().is_some_and(|targets|targets.iter().filter_map(Value::as_str).any(|v|v=="portal"||v=="focused"||v.starts_with("/dev/video")||v.chars().all(|c|c.is_ascii_digit())));
+            self.inventory=if is_static {None}else{Some(crate::video_inventory::Inventory::new(&self.application_root))};
             self.revision = u64::MAX;
             self.discover_audio()?;
             self.update_identity();
@@ -224,6 +256,7 @@ impl Recorder {
             interval(&mut t.activity, group.is_some_and(|g| g.active), elapsed);
             interval(&mut t.presence, group.is_some(), elapsed);
             if group.is_none() || !t.alive() {
+                t.meta["retired_at"] = json!(elapsed);
                 t.stop()?;
             }
         }
@@ -258,6 +291,103 @@ impl Recorder {
         }
         Ok(())
     }
+    fn discover_video(&mut self) -> Result<()> {
+        use crate::hotplug::{self, CurrentTrack, InventorySnapshot};
+        let time = now();
+        let Some(worker)=&mut self.inventory else {return Ok(());};
+        let response=worker.poll();
+        if response.is_none() {
+            if !worker.pending() && time-self.last_video_poll >= hotplug::POLL_INTERVAL {
+                let previous=self.tracks.iter().filter(|t|t.meta["type"]=="video"&&!t.closed).map(|t|t.meta.clone()).collect::<Vec<_>>();
+                if let Err(error)=worker.request(json!({"settings":self.config,"capabilities":self.capabilities,"previous":previous})) {
+                    self.video_inventory_error=error;self.inventory=Some(crate::video_inventory::Inventory::new(&self.application_root));
+                }
+                self.last_video_poll=time;
+            }
+            return Ok(());
+        }
+        let snapshot = match response.unwrap() {
+            Ok(value) => hotplug::snapshot_from_video_plan(&value),
+            Err(error) => {
+                self.inventory=Some(crate::video_inventory::Inventory::new(&self.application_root));
+                InventorySnapshot::Failed { error, transient: true }
+            },
+        };
+        if let InventorySnapshot::Failed { error, .. } = &snapshot {
+            self.video_inventory_error = error.clone();
+            return Ok(()); // A failed probe is never a disconnect event.
+        }
+        self.video_inventory_error.clear();
+        let mut current = vec![];
+        for track in self.tracks.iter_mut().filter(|t| t.meta["type"] == "video") {
+            let alive = track.alive();
+            if !alive && !track.closed && track.meta["hotplug_dead"] != true {
+                track.meta["hotplug_dead"] = json!(true);
+                let count=self.video_retries.get(&track.key).map(|v|v.0).unwrap_or(0)+1;
+                self.video_retries.insert(track.key.clone(),(count,time+hotplug::retry_delay(count)));
+                self.video_inventory_error=track.error();
+            }
+            let retry=self.video_retries.get(&track.key).copied();
+            current.push(CurrentTrack {
+                id: track.id.clone(), key: track.key.clone(),
+                fingerprint: track.meta["hotplug_fingerprint"].as_str().unwrap_or("").into(),
+                generation: track.meta["hotplug_generation"].as_u64().unwrap_or(1),
+                alive, closed: track.closed,
+                last_attempt: None, failures: retry.map(|v|v.0).unwrap_or(0), retry_at: retry.map(|v|v.1),
+            });
+        }
+        let plan = hotplug::reconcile_snapshot(&snapshot, &current, time);
+        let mut changed = false;
+        for retirement in &plan.retirements {
+            if matches!(retirement.reason,hotplug::RetireReason::Disconnected|hotplug::RetireReason::Superseded) {self.video_retries.remove(&retirement.key);}
+            if let Some(track) = self.tracks.iter_mut().find(|t| t.id == retirement.id) {
+                track.meta["retired_at"] = json!(time - self.origin);
+                track.stop()?; changed = true;
+            }
+        }
+        for addition in &plan.additions {
+            let spec = &addition.display;
+            if addition.reason == hotplug::SpawnReason::Changed {self.video_retries.remove(&spec.key);}
+            if self.video_retries.get(&spec.key).is_some_and(|(_,retry)| time < *retry) { continue; }
+            // A retry retires the dead generation while keeping its saved rows.
+            for track in self.tracks.iter_mut().filter(|t| t.key == spec.key && !t.closed) {
+                track.meta["retired_at"] = json!(time - self.origin);
+                track.stop()?;
+            }
+            let generation = self.video_generations.get(&spec.key).copied().unwrap_or(0) + 1;
+            self.video_generations.insert(spec.key.clone(), generation);
+            match Track::spawn(self.root.as_ref().context("Replay root")?, self.origin,
+                    spec.key.clone(), spec.stamped_meta(generation), &spec.command, String::new()) {
+                Ok(track) => { self.tracks.push(track); changed = true; }
+                Err(error) => {
+                    let count=self.video_retries.get(&spec.key).map(|v|v.0).unwrap_or(0)+1;
+                    self.video_retries.insert(spec.key.clone(), (count, time+hotplug::retry_delay(count)));
+                    self.video_inventory_error=format!("{}: {error:#}",spec.name);
+                }
+            }
+        }
+        // Back off crashing producers, but clear a source's retry budget after
+        // it survives one complete segment. Retired sources keep their media.
+        for track in self.tracks.iter_mut().filter(|t| t.meta["type"]=="video" && !t.closed) {
+            if track.alive() {
+                let ready=track.path.join("%08d.mkv.ts").is_file() && track.path.join("00000000.mkv").metadata().is_ok_and(|m|m.len()>500);
+                if ready && time-self.origin-track.offset > 3. { self.video_retries.remove(&track.key); }
+                else if !ready && time-self.origin-track.offset > 10. {
+                    let count=self.video_retries.get(&track.key).map(|v|v.0).unwrap_or(0)+1;
+                    self.video_retries.insert(track.key.clone(),(count,time+hotplug::retry_delay(count)));
+                    self.video_inventory_error=format!("{}: no capture frames arrived within ten seconds; retrying.",track.meta["name"].as_str().unwrap_or("Display"));
+                    track.meta["retired_at"]=json!(time-self.origin);track.stop()?;
+                }
+            } else if track.meta["hotplug_dead"] != true {
+                track.meta["hotplug_dead"] = json!(true);
+                self.video_inventory_error = track.error();
+                let count=self.video_retries.get(&track.key).map(|v|v.0).unwrap_or(0)+1;
+                self.video_retries.insert(track.key.clone(),(count,time+hotplug::retry_delay(count)));
+            }
+        }
+        if changed { self.write_session()?; }
+        Ok(())
+    }
     pub fn tick(&mut self) {
         self.update_identity();
         if !self.running {
@@ -265,6 +395,7 @@ impl Recorder {
         }
         let result = (|| -> Result<()> {
             self.discover_audio()?;
+            self.discover_video()?;
             let root = self.root.as_ref().context("RAM root")?;
             if buffer_storage::free_bytes(root)? < MIN_FREE
                 || self.record_start.is_some()
@@ -282,13 +413,13 @@ impl Recorder {
             let elapsed = now() - self.origin;
             let cutoff = (elapsed - self.buffer_limit - 6.)
                 .min(self.record_start.map(|s| s - 3.).unwrap_or(f64::INFINITY));
-            let archive = self.archive.as_ref().context("Recording spool")?;
+            let archive = self.archive.as_ref().context("Recording spool")?.clone();
             let mut errors = vec![];
             for t in &mut self.tracks {
                 t.prune(
                     cutoff,
                     self.record_start.map(|_| elapsed - self.buffer_limit - 6.),
-                    archive,
+                    &archive,
                 )?;
                 if !t.closed && !t.alive() && !t.reported {
                     t.reported = true;
@@ -299,7 +430,12 @@ impl Recorder {
                 self.error(error);
             }
             // Closed, expired generations do not accumulate in long-running replay sessions.
-            self.tracks.retain(|t| !t.closed || !t.rows.is_empty());
+            self.tracks.retain(|t| {
+                if !t.closed || !t.rows.is_empty() { return true; }
+                let _ = fs::remove_dir_all(&t.path);
+                let _ = fs::remove_dir_all(archive.join(&t.id));
+                false
+            });
             Ok(())
         })();
         if let Err(error) = result {
@@ -323,8 +459,41 @@ impl Recorder {
                 .as_ref()
                 .context("Session root")?
                 .join("session.json"),
-            &json!({"created":chrono::Local::now().to_rfc3339(),"sources":sources}),
+            &json!({"created":chrono::Local::now().to_rfc3339(),"sources":sources,
+                "recording_start":self.record_start,"recording_paused":self.recording_timeline.paused(),
+                "recording_spans":self.record_start.map(|s|self.recording_timeline.spans(s,now()-self.origin))}),
         )
+    }
+    pub fn gsr_action(&mut self, action: &str, seconds: Option<u64>) -> Result<Value> {
+        // GSR owns the parent mode. Its nested ordinary recording is distinct
+        // from replay/streaming and must survive a mere overlay UI refresh.
+        match action {
+            "record-on" | "record-on-replay" | "record-on-stream" => {
+                self.gsr_mode=match action {"record-on-replay"=>"replay","record-on-stream"=>"stream",_=>"record"};
+                self.set_state("record",true)?;
+                self.gsr_recording=true;
+            },
+            "record-off" => {
+                if self.gsr_recording { self.set_state("record",false)?; self.gsr_recording=false; }
+                if self.gsr_mode=="record" {self.gsr_mode="idle";}
+            },
+            "replay-on" => {self.gsr_mode="replay";self.set_state("replay",true)?;},
+            "replay-off" => {
+                if self.gsr_mode=="replay" && self.gsr_recording {self.set_state("record",false)?;self.gsr_recording=false;}
+                self.set_state("replay",false)?;
+                if self.gsr_mode=="replay" {self.gsr_mode="idle";}
+            },
+            "stream-on" => {self.gsr_mode="stream";},
+            "stream-off" => {
+                if self.gsr_mode=="stream" && self.gsr_recording {self.set_state("record",false)?;self.gsr_recording=false;}
+                if self.gsr_mode=="stream" {self.gsr_mode="idle";}
+            },
+            "pause-on" => {self.set_paused(true)?;},
+            "pause-off" => {self.set_paused(false)?;},
+            "save-1" | "save-5" => return self.save_replay(seconds.context("Missing replay save duration")?),
+            _=>bail!("Unknown GSR integration action."),
+        }
+        Ok(self.status())
     }
     pub fn set_state(&mut self, kind: &str, enabled: bool) -> Result<Value> {
         let active = match kind {
@@ -352,20 +521,41 @@ impl Recorder {
         }
         Ok(self.status())
     }
+    pub fn set_paused(&mut self, paused: bool) -> Result<Value> {
+        if self.record_start.is_none() {
+            // Detached GSR pause callbacks can arrive after a saved recording.
+            if !paused { return Ok(self.status()); }
+            bail!("Start an ordinary recording before pausing. Replay keeps buffering independently.");
+        }
+        self.recording_timeline.set_paused(paused, now() - self.origin);
+        self.write_session()?;
+        Ok(self.status())
+    }
+    pub fn toggle_pause(&mut self) -> Result<Value> {
+        self.set_paused(!self.recording_timeline.paused())
+    }
     pub fn toggle_record(&mut self) -> Result<Value> {
         if self.record_start.is_none() {
             self.start("record")?;
-            self.record_start = Some(now() - self.origin);
+            let start = now() - self.origin;
+            self.record_start = Some(start);
+            self.recording_timeline.begin(start);
+            self.write_session()?;
             return Ok(self.status());
         }
         let end = now() - self.origin;
         let start = self.record_start.unwrap();
+        if self.recording_timeline.duration(start, end) < 0.5 {
+            bail!("The unpaused recording is too short. Resume and record for at least one second before saving.");
+        }
         if !self.replay {
             self.stop(false)?;
         }
         // On save failure, retain the recording marker and recoverable media.
         let project = self.snapshot(start, end, "recording")?;
         self.record_start = None;
+        self.gsr_recording = false;
+        self.recording_timeline.clear();
         if !self.running {
             self.cleanup();
         }
@@ -433,6 +623,7 @@ impl Recorder {
         }
         self.running = false;
         self.monitor = None;
+        self.inventory = None;
         if clean {
             self.cleanup();
         }
@@ -507,8 +698,9 @@ impl Recorder {
                     let coverage = item["timeline_start"].as_f64().unwrap()
                         + item["media_duration"].as_f64().unwrap()
                         - item["trim_in"].as_f64().unwrap();
-                    if coverage < end - start - 0.25 {
-                        project["warnings"].as_array_mut().unwrap().push(json!(format!("{}: the final {:0.2} seconds could not be saved; missing video holds and missing audio is silent.",track.meta["name"].as_str().unwrap_or("Source"),end-start-coverage)));
+                    let expected_end = track.meta["retired_at"].as_f64().unwrap_or(end).min(end) - start;
+                    if coverage < expected_end - 0.25 {
+                        project["warnings"].as_array_mut().unwrap().push(json!(format!("{}: the final {:0.2} seconds could not be saved; missing video holds and missing audio is silent.",track.meta["name"].as_str().unwrap_or("Source"),expected_end-coverage)));
                     }
                     project["sources"].as_array_mut().unwrap().push(item);
                 }
@@ -521,6 +713,19 @@ impl Recorder {
                         track.meta["name"].as_str().unwrap_or("Source")
                     ))),
             }
+        }
+        if kind == "recording" {
+            let spans = self.recording_timeline.spans(start, end);
+            let duration: f64 = spans.iter().map(|(a,b)|b-a).sum();
+            if duration < 0.5 {
+                atomic_json(&folder.join("recovery.json"), &project)?;
+                bail!("The unpaused recording is too short. Resume and record for at least one second; recoverable media is retained.");
+            }
+            let enabled: Vec<Value> = project["sources"].as_array().unwrap().iter().map(|v|v["id"].clone()).collect();
+            project["sections"] = json!(spans.iter().map(|(a,b)|json!({"start":a-start,"end":b-start,"enabled_ids":enabled})).collect::<Vec<_>>());
+            project["source_duration"] = json!(end-start);
+            project["recorded_duration"] = json!(duration);
+            project["pause_mode"] = json!("non-destructive-timeline");
         }
         let path = folder.join("project.katman");
         if !project["sources"]
@@ -615,6 +820,7 @@ fn save_track(
         return Ok(None);
     }
     let mut item = t.meta.clone();
+    if let Some(meta) = item.as_object_mut() { meta.retain(|key,_| !key.starts_with("hotplug_") && key != "retired_at"); }
     item["id"] = json!(t.id);
     item["file"] = json!(relative);
     item["timeline_start"] = json!((first - start).max(0.));

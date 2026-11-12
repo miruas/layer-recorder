@@ -13,13 +13,13 @@ class BridgeActions(unittest.TestCase):
     def test_save_durations_and_explicit_states(self, settings, ensure, request, notify):
         request.return_value = 'project.katman'
         bridge.mirror('save-1')
-        request.assert_called_with('save-replay', seconds=60)
+        request.assert_called_with('gsr-action',command='save-1',seconds=60)
         bridge.mirror('save-5')
-        request.assert_called_with('save-replay', seconds=300)
+        request.assert_called_with('gsr-action',command='save-5',seconds=300)
         self.assertEqual(settings.call_count, 2)
         request.return_value = {'recording': False}
         bridge.mirror('record-off')
-        request.assert_called_with('set-capture-state', kind='record', enabled=False)
+        request.assert_called_with('gsr-action',command='record-off')
         count=ensure.call_count
         with self.assertRaises(ValueError):
             bridge.mirror('invalid')

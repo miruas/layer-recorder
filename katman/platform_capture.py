@@ -251,7 +251,7 @@ def _enrich_geometry(items):
             item.update(update)
 
 
-def displays(program, targets=None):
+def displays(program, targets=None, *, include_capture_mode=False):
     process = subprocess.run([program, "--list-monitors"], capture_output=True,
                              text=True, timeout=INVENTORY_TIMEOUT)
     standalone = lambda target: (target in ("portal", "focused") or
@@ -270,6 +270,8 @@ def displays(program, targets=None):
         result.append(dict(name=name, label=name, x=x, y=0, width=width,
                            height=height, logical_width=width,
                            logical_height=height, layout_provider="synthetic"))
+        if include_capture_mode:
+            result[-1].update(capture_width=width,capture_height=height)
         x += width
     if result:
         _enrich_geometry(result)

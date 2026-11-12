@@ -196,12 +196,15 @@ fn connection(
 }
 fn handle(r: &mut Recorder, m: &Value) -> Result<Value> {
     match m["action"].as_str() {
+        Some("gsr-action") => r.gsr_action(m["command"].as_str().context("Missing GSR action")?,m["seconds"].as_u64()),
         Some("set-capture-state") => r.set_state(
             m["kind"].as_str().context("Invalid capture kind")?,
             m["enabled"]
                 .as_bool()
                 .context("Capture state must be boolean")?,
         ),
+        Some("set-paused") => r.set_paused(m["enabled"].as_bool().context("Pause state must be boolean")?),
+        Some("toggle-pause") => r.toggle_pause(),
         Some("reload-settings") => r.reload(),
         Some("toggle-record") => r.toggle_record(),
         Some("toggle-replay") => r.toggle_replay(),
