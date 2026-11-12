@@ -15,12 +15,37 @@ pub fn resolved_settings(root:&Path)->Result<Value>{
  let out=Command::new(python).args(["-c","import json; from katman.common import settings; print(json.dumps(settings()))"]).env("PYTHONPATH",root).current_dir(root).output()?;
  if !out.status.success(){bail!("{}",String::from_utf8_lossy(&out.stderr).trim());}Ok(serde_json::from_slice(&out.stdout)?)
 }
+static SETTINGS_WRITES:std::sync::Mutex<()>=std::sync::Mutex::new(());
 pub fn save_library(library:&str)->Result<()> {
+ let _guard=SETTINGS_WRITES.lock().map_err(|_|anyhow::anyhow!("Settings save lock is unavailable."))?;
  let target=expand(library);fs::create_dir_all(target)?;
  let file=settings_path();let mut raw:Value=if file.is_file(){serde_json::from_slice(&fs::read(&file)?)?}else{json!({})};
  if !raw.is_object(){bail!("Layer settings must be an object.");}raw["library"]=json!(library);
  let parent=file.parent().context("Settings folder")?;fs::create_dir_all(parent)?;
  let mut tmp=tempfile::NamedTempFile::new_in(parent)?;serde_json::to_writer_pretty(&mut tmp,&raw)?;tmp.flush()?;tmp.as_file().sync_all()?;tmp.persist(file)?;Ok(())
+}
+/// Persist only Layer's preview preferences; GSR and project files are untouched.
+/// Call on a background worker because reading and syncing settings can block.
+pub fn save_preview_preferences(preferences:crate::preview_settings::PreviewSettings)->Result<()> {
+ save_preview_preferences_at(&settings_path(),preferences)
+}
+fn save_preview_preferences_at(file:&Path,preferences:crate::preview_settings::PreviewSettings)->Result<()> {
+ // Serialize this process's preference saves so simultaneous toolbar changes
+ // always merge into the most recently persisted raw settings object.
+ let _guard=SETTINGS_WRITES.lock().map_err(|_|anyhow::anyhow!("Preview settings save lock is unavailable."))?;
+ let mut raw:Value=match fs::read(file) {
+  Ok(bytes)=>serde_json::from_slice(&bytes).context("Read existing Layer settings")?,
+  Err(error) if error.kind()==std::io::ErrorKind::NotFound=>json!({}),
+  Err(error)=>return Err(error).context("Read existing Layer settings"),
+ };
+ preferences.write_config(&mut raw).map_err(anyhow::Error::msg)?;
+ let parent=file.parent().filter(|path|!path.as_os_str().is_empty()).unwrap_or_else(||Path::new("."));
+ fs::create_dir_all(parent).context("Create Layer settings folder")?;
+ let mut tmp=tempfile::NamedTempFile::new_in(parent).context("Create temporary Layer settings")?;
+ serde_json::to_writer_pretty(&mut tmp,&raw)?;tmp.write_all(b"\n")?;
+ tmp.flush()?;tmp.as_file().sync_all()?;tmp.persist(file).context("Replace Layer settings")?;
+ fs::File::open(parent)?.sync_all()?;
+ Ok(())
 }
 pub fn expand(path:&str)->PathBuf{if path=="~"||path.starts_with("~/"){PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(path.trim_start_matches('~').trim_start_matches('/'))}else{PathBuf::from(path)}}
 pub fn request(message:Value)->Result<Value>{let mut s=UnixStream::connect(runtime().join("control.sock"))?;s.set_read_timeout(Some(Duration::from_secs(180)))?;serde_json::to_writer(&mut s,&message)?;s.write_all(b"\n")?;s.flush()?;let mut line=String::new();BufReader::new(s).read_line(&mut line)?;let reply:Value=serde_json::from_str(&line)?;if reply["ok"]!=true{bail!("{}",reply["error"].as_str().unwrap_or("Capture operation failed"));}Ok(reply["data"].clone())}
@@ -82,4 +107,30 @@ mod tests{
    assert!(GSR_ACTIONS.contains(&action),"{action}");
   }
  }
+ #[test]
+ fn preview_save_preserves_raw_unrelated_preferences_and_creates_missing_folder(){
+  use crate::preview_settings::{PreviewSettings,Resolution,FrameRate};
+  let temp=tempfile::tempdir().unwrap();let file=temp.path().join("new/settings.json");
+  let preferences=PreviewSettings{resolution:Resolution::QuadHd,frame_rate:FrameRate::Fps120};
+  save_preview_preferences_at(&file,preferences).unwrap();
+  let first:Value=serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+  assert_eq!(first,json!({"preview_resolution":"1440p","preview_fps":120}));
+  let raw=json!({"fps":60,"capture_resolution":"1080p","library":"/test library","unknown":{"keep":[1,2]},"preview_fps":"source"});
+  fs::write(&file,serde_json::to_vec(&raw).unwrap()).unwrap();
+  save_preview_preferences_at(&file,preferences).unwrap();
+  let saved:Value=serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+  for key in ["fps","capture_resolution","library","unknown"]{assert_eq!(saved[key],raw[key]);}
+  assert_eq!(PreviewSettings::from_config(&saved).unwrap(),preferences);
+  assert_eq!(fs::read_dir(file.parent().unwrap()).unwrap().count(),1);
+ }
+ #[test]
+ fn preview_save_refuses_invalid_existing_settings_without_overwriting(){
+  let temp=tempfile::tempdir().unwrap();let file=temp.path().join("settings.json");
+  for bytes in [b"invalid JSON".as_slice(),b"[]".as_slice(),b"null".as_slice()] {
+   fs::write(&file,bytes).unwrap();
+   assert!(save_preview_preferences_at(&file,crate::preview_settings::PreviewSettings::default()).is_err());
+   assert_eq!(fs::read(&file).unwrap(),bytes);
+  }
+ }
+
 }

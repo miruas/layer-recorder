@@ -15,7 +15,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-const MAX_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CACHE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_LAYERS: usize = 32;
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct Key {
@@ -39,6 +39,8 @@ pub struct Layer {
 pub enum Mark {
     Fill([f32; 4], Color32),
     Line(Vec<[f32; 2]>, Color32, f32, bool),
+    Privacy([f32; 4], crate::gpu_effects::Privacy),
+    Text(crate::overlay_cache::TextKey, [f32; 2], Color32),
 }
 #[derive(Clone)]
 pub struct Scene {
@@ -79,6 +81,16 @@ fn safe_file(root: &Path, relative: &str) -> Option<PathBuf> {
 }
 /// No unsupported visual effect is silently skipped, including privacy effects.
 pub fn scene(path: &Path, project: &Value, model: &Value, time: f64) -> Option<Scene> {
+    scene_with_options(path, project, model, time, [960, 640], false)
+}
+pub fn scene_with_options(
+    path: &Path,
+    project: &Value,
+    model: &Value,
+    time: f64,
+    bounds: [u32; 2],
+    gpu: bool,
+) -> Option<Scene> {
     if !time.is_finite() || time < 0. {
         return None;
     }
@@ -136,7 +148,9 @@ pub fn scene(path: &Path, project: &Value, model: &Value, time: f64) -> Option<S
             if sw < 1. || sh < 1. {
                 return None;
             }
-            let factor = (960. / sw).min(640. / sh).min(1.);
+            let factor = (bounds[0].clamp(2, 3840) as f64 / sw)
+                .min(bounds[1].clamp(2, 2160) as f64 / sh)
+                .min(1.);
             let width = (sw * factor).floor().max(1.) as usize;
             let height = (sh * factor).floor().max(1.) as usize;
             let file = safe_file(root, source["file"].as_str()?)?;
@@ -226,6 +240,63 @@ pub fn scene(path: &Path, project: &Value, model: &Value, time: f64) -> Option<S
             }
         }
     }
+    append_marks(&mut result, model, time, gpu)?;
+    Some(result)
+}
+/// The moving picture can be decoded independently while annotations remain
+/// live GPU overlays. Subtitles still use the accurate fallback until their
+/// isolated rasterization path is supported.
+pub fn overlay_scene(model: &Value, time: f64) -> Option<Scene> {
+    let mut result = Scene {
+        layers: vec![],
+        marks: vec![],
+    };
+    append_marks(&mut result, model, time, true)?;
+    Some(result)
+}
+pub fn base_fingerprint(model: &Value) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    if !overlay_eligible(model) {
+        return None;
+    }
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    for (key, value) in model.as_object()? {
+        if key != "annotations" {
+            key.hash(&mut hash);
+            value.hash(&mut hash);
+        }
+    }
+    Some(hash.finish())
+}
+fn overlay_eligible(model: &Value) -> bool {
+    !model["subtitles"].as_array().is_some_and(|v| !v.is_empty())
+        && model["annotations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|ann| {
+                [
+                    "redact",
+                    "blur",
+                    "pixelate",
+                    "pen",
+                    "line",
+                    "arrow",
+                    "rectangle",
+                    "text",
+                ]
+                .contains(&ann["kind"].as_str().unwrap_or(""))
+            })
+}
+pub fn playback_base(model: &Value) -> Option<Value> {
+    if !overlay_eligible(model) {
+        return None;
+    }
+    let mut base = model.clone();
+    base["annotations"] = serde_json::json!([]);
+    Some(base)
+}
+fn append_marks(result: &mut Scene, model: &Value, time: f64, gpu: bool) -> Option<()> {
     for ann in model["annotations"]
         .as_array()
         .into_iter()
@@ -267,8 +338,14 @@ pub fn scene(path: &Path, project: &Value, model: &Value, time: f64) -> Option<S
         );
         match ann["kind"].as_str()? {
             "redact" => result.marks.push(Mark::Fill(rect, Color32::BLACK)),
+            "blur" if gpu => result
+                .marks
+                .push(Mark::Privacy(rect, crate::gpu_effects::Privacy::Blur)),
+            "pixelate" if gpu => result
+                .marks
+                .push(Mark::Privacy(rect, crate::gpu_effects::Privacy::Pixelate)),
             "pen" | "line" | "arrow" | "rectangle" => {
-                let pts: Vec<[f32; 2]> = ann["points"]
+                let mut pts: Vec<[f32; 2]> = ann["points"]
                     .as_array()?
                     .iter()
                     .map(|p| {
@@ -280,6 +357,9 @@ pub fn scene(path: &Path, project: &Value, model: &Value, time: f64) -> Option<S
                     .collect();
                 if pts.len() > 5000 || pts.iter().flatten().any(|v| !v.is_finite()) {
                     return None;
+                }
+                if ann["kind"] != "pen" && pts.len() > 2 {
+                    pts = vec![pts[0], *pts.last()?];
                 }
                 let width = (n(ann, "width", 0.004) as f32 * rect[3]).max(1.);
                 if !width.is_finite() {
@@ -321,11 +401,31 @@ pub fn scene(path: &Path, project: &Value, model: &Value, time: f64) -> Option<S
                 }
             }
             // The egui font is not FFmpeg's resolved font; drawtext also has an outline.
+            "text" if gpu => {
+                let text = ann["text"].as_str().unwrap_or("").to_string();
+                let size = n(ann, "font_size", 36.).round().clamp(1., 1000.) as u32;
+                let width = (n(model, "width", 1920.).ceil() as u32 + 4).clamp(4, 4096);
+                let height = (size.saturating_mul(text.lines().count().max(1) as u32 + 2) + 4)
+                    .clamp(4, 2048);
+                if text.len() > 16384 || text.contains('\0') {
+                    return None;
+                }
+                let key = crate::overlay_cache::TextKey {
+                    font: ann["font"].as_str().unwrap_or("Noto Sans").to_string(),
+                    text,
+                    size_px: size,
+                    width,
+                    height,
+                };
+                result
+                    .marks
+                    .push(Mark::Text(key, [rect[0] - 2., rect[1] - 2.], c));
+            }
             "text" => return None,
             _ => return None,
         }
     }
-    Some(result)
+    Some(())
 }
 #[derive(Default)]
 struct Shared {
@@ -545,6 +645,63 @@ impl Cache {
             s.pending.remove(&key);
         }
     }
+    pub fn gpu_frame(
+        &self,
+        ctx: &egui::Context,
+        scene: &Scene,
+        canvas: [f32; 2],
+        size: [u32; 2],
+        overlays: &crate::overlay_cache::Cache,
+    ) -> Option<crate::gpu_effects::Frame> {
+        if !self.ready(scene) {
+            return None;
+        }
+        let mut ops = vec![];
+        for layer in &scene.layers {
+            let [x, y, w, h] = layer.rect;
+            let center = [x + w / 2., y + h / 2.];
+            let (c, s) = (layer.angle.cos(), layer.angle.sin());
+            let points = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]].map(|v| {
+                let (dx, dy) = (v[0] - center[0], v[1] - center[1]);
+                [center[0] + dx * c - dy * s, center[1] + dx * s + dy * c]
+            });
+            let texture = if let Some(key) = &layer.key {
+                self.textures.get(key)?.handle.id()
+            } else {
+                egui::TextureId::default()
+            };
+            let mut mesh = egui::Mesh::with_texture(texture);
+            let [a, b, c, d] = layer.uv;
+            let uvs = [[a, b], [c, b], [c, d], [a, d]];
+            for (i, p) in points.iter().enumerate() {
+                mesh.vertices.push(egui::epaint::Vertex {
+                    pos: Pos2::new(p[0], p[1]),
+                    uv: Pos2::new(uvs[i][0], uvs[i][1]),
+                    color: Color32::from_white_alpha((layer.alpha * 255.).round() as u8),
+                });
+            }
+            mesh.indices = vec![0, 1, 2, 0, 2, 3];
+            ops.push(crate::gpu_effects::Op::Mesh(
+                mesh,
+                Some(crate::gpu_effects::Border {
+                    width: layer.border,
+                    size: [w, h],
+                    color: layer.border_color,
+                    uv: layer.uv,
+                    blackout: layer.key.is_none(),
+                }),
+            ));
+        }
+        let base_count = ops.len();
+        ops.extend(mark_ops(ctx, scene, canvas, overlays)?);
+        Some(crate::gpu_effects::Frame {
+            size,
+            canvas,
+            ops,
+            base_count,
+            generation: 0,
+        })
+    }
     pub fn paint(&self, painter: &egui::Painter, rect: Rect, canvas: Vec2, scene: &Scene) {
         let scale = rect.width() / canvas.x;
         let p = |v: [f32; 2]| Pos2::new(rect.left() + v[0] * scale, rect.top() + v[1] * scale);
@@ -599,6 +756,7 @@ impl Cache {
                         *c,
                     );
                 }
+                Mark::Privacy(..) | Mark::Text(..) => {}
                 Mark::Line(points, c, w, closed) => {
                     let pts = points.iter().map(|v| p(*v)).collect();
                     painter.add(if *closed {
@@ -610,6 +768,74 @@ impl Cache {
             }
         }
     }
+}
+pub fn text_keys(scene: &Scene) -> Vec<crate::overlay_cache::TextKey> {
+    scene
+        .marks
+        .iter()
+        .filter_map(|mark| {
+            if let Mark::Text(key, ..) = mark {
+                Some(key.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+pub fn image_mesh(texture: egui::TextureId, rect: [f32; 4], color: Color32) -> egui::Mesh {
+    let mut mesh = egui::Mesh::with_texture(texture);
+    mesh.add_rect_with_uv(
+        Rect::from_min_size(Pos2::new(rect[0], rect[1]), Vec2::new(rect[2], rect[3])),
+        Rect::from_min_max(Pos2::ZERO, Pos2::new(1., 1.)),
+        color,
+    );
+    mesh
+}
+pub fn mark_ops(
+    ctx: &egui::Context,
+    scene: &Scene,
+    canvas: [f32; 2],
+    overlays: &crate::overlay_cache::Cache,
+) -> Option<Vec<crate::gpu_effects::Op>> {
+    use crate::gpu_effects::{Op, Privacy};
+    let mut result = vec![];
+    for mark in &scene.marks {
+        match mark {
+            Mark::Fill(rect, _) => result.push(Op::Privacy {
+                rect: *rect,
+                kind: Privacy::Black,
+            }),
+            Mark::Privacy(rect, kind) => result.push(Op::Privacy {
+                rect: *rect,
+                kind: *kind,
+            }),
+            Mark::Text(key, pos, color) => result.push(Op::Mesh(
+                image_mesh(
+                    overlays.texture(key)?,
+                    [pos[0], pos[1], key.width as f32, key.height as f32],
+                    *color,
+                ),
+                None,
+            )),
+            Mark::Line(points, color, width, closed) => {
+                let points: Vec<Pos2> = points.iter().map(|p| Pos2::new(p[0], p[1])).collect();
+                let shape = if points.len() == 1 {
+                    egui::Shape::circle_filled(points[0], *width / 2., *color)
+                } else if *closed {
+                    egui::Shape::rect_stroke(
+                        Rect::from_points(&points),
+                        0.,
+                        Stroke::new(*width, *color),
+                        egui::StrokeKind::Inside,
+                    )
+                } else {
+                    egui::Shape::line(points, Stroke::new(*width, *color))
+                };
+                result.extend(crate::gpu_effects::vector_ops(ctx, vec![shape], canvas));
+            }
+        }
+    }
+    Some(result)
 }
 impl Drop for Cache {
     fn drop(&mut self) {
@@ -627,7 +853,7 @@ fn decode(key: &Key, state: &Arc<(Mutex<Shared>, Condvar)>) -> Result<Vec<u8>, S
         .and_then(|v| v.checked_mul(4))
         .filter(|bytes| *bytes > 0 && *bytes <= MAX_CACHE_BYTES)
         .ok_or("Invalid source-frame dimensions")?;
-    if key.width > 960 || key.height > 640 {
+    if key.width > 3840 || key.height > 2160 {
         return Err("Invalid source-frame dimensions".into());
     }
     if {
@@ -729,6 +955,34 @@ mod tests {
         let project = json!({"sources":[{"id":"v","file":"media/v.mkv","type":"video","width":1920,"height":1080,"media_duration":10}]});
         let model = json!({"width":1920,"height":1080,"fps":60,"tracks":[{"kind":"video","clips":[{"id":"c","source_id":"v","start":0,"in":1,"length":4,"x":0,"y":0,"w":1920,"h":1080}]}],"annotations":[]});
         (project, model)
+    }
+    #[test]
+    fn gpu_overlays_preserve_source_detail_and_do_not_invalidate_underlay() {
+        let (p, mut m) = fixture();
+        let path = Path::new("/r/project.katman");
+        let mut p = p;
+        p["sources"][0]["width"] = json!(1920);
+        p["sources"][0]["height"] = json!(1080);
+        m["annotations"] = json!([{"id":"p","kind":"blur","start":0,"end":3,"x":5,"y":5,"w":20,"h":20},{"id":"t","kind":"text","start":0,"end":3,"text":"Title","font_size":24}]);
+        let scene = scene_with_options(path, &p, &m, 1., [3840, 2160], true).unwrap();
+        let key = scene.layers[0].key.as_ref().unwrap();
+        assert_eq!([key.width, key.height], [1920, 1080]);
+        assert!(matches!(
+            scene.marks[0],
+            Mark::Privacy(_, crate::gpu_effects::Privacy::Blur)
+        ));
+        assert!(matches!(scene.marks[1], Mark::Text(..)));
+        let base = base_fingerprint(&m);
+        m["annotations"][0]["x"] = json!(100);
+        m["annotations"][1]["color"] = json!("#ff0000");
+        assert_eq!(base_fingerprint(&m), base);
+        m["tracks"][0]["clips"][0]["brightness"] = json!(0.12);
+        assert_ne!(base_fingerprint(&m), base);
+        let raw = playback_base(&m).unwrap();
+        assert!(raw["annotations"].as_array().unwrap().is_empty());
+        assert_eq!(raw["tracks"], m["tracks"]);
+        m["subtitles"] = json!([{"text":"Caption","start":0,"end":3}]);
+        assert!(playback_base(&m).is_none());
     }
     #[test]
     fn geometry_edits_keep_the_decoded_frame_key() {
@@ -949,7 +1203,7 @@ mod tests {
             decoded: 0,
             last_decode_ms: 0.,
         };
-        for i in 0..30 {
+        for i in 0..60 {
             let key = Key {
                 path: PathBuf::from(format!("/r/{i}")),
                 root: PathBuf::from("/r"),
@@ -968,7 +1222,7 @@ mod tests {
             assert!(cache.textures.values().map(|t| t.bytes).sum::<usize>() <= MAX_CACHE_BYTES);
         }
         assert!(!cache.failed.is_empty());
-        assert_eq!(cache.textures.len(), 27);
+        assert_eq!(cache.textures.len(), 54);
     }
     #[test]
     #[ignore = "manual CPU composition benchmark; run with --ignored --nocapture"]
@@ -1019,8 +1273,8 @@ mod tests {
     #[test]
     fn oversized_working_set_falls_back_but_shared_frames_count_once() {
         let (mut p, mut m) = fixture();
-        p["sources"][0]["width"] = json!(960);
-        p["sources"][0]["height"] = json!(640);
+        p["sources"][0]["width"] = json!(1920);
+        p["sources"][0]["height"] = json!(1080);
         let clip = m["tracks"][0]["clips"][0].clone();
         let clips: Vec<Value> = (0..30)
             .map(|i| {
@@ -1031,15 +1285,32 @@ mod tests {
             })
             .collect();
         m["tracks"][0]["clips"] = json!(clips);
-        assert!(scene(Path::new("/r/project.katman"), &p, &m, 1.).is_none());
+        assert!(
+            scene_with_options(
+                Path::new("/r/project.katman"),
+                &p,
+                &m,
+                1.,
+                [3840, 2160],
+                false
+            )
+            .is_none()
+        );
         for clip in m["tracks"][0]["clips"].as_array_mut().unwrap() {
             clip["in"] = json!(0.);
         }
         assert_eq!(
-            scene(Path::new("/r/project.katman"), &p, &m, 1.)
-                .unwrap()
-                .layers
-                .len(),
+            scene_with_options(
+                Path::new("/r/project.katman"),
+                &p,
+                &m,
+                1.,
+                [3840, 2160],
+                false
+            )
+            .unwrap()
+            .layers
+            .len(),
             30
         );
     }

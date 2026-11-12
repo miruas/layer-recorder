@@ -10,6 +10,7 @@ DEFAULTS = {
     'auto_replay': False, 'replay_short':60, 'replay_long':300,
     'shortcuts_enabled':True, 'shortcuts':{'ui':'Meta+Alt+Z','save-1':'Meta+Alt+F7','save-5':'Meta+Alt+F8','record':'Meta+Alt+F9','replay':'Meta+Alt+F10'}, 'gsr_sync':False, 'gsr_preferences':True, 'gsr_source':'gsr', 'gsr_config':'', 'gpu_vendor': 'auto', 'capture_backend': 'auto',
     'capture_resolution': 'native', 'capture_targets': [], 'capture_codec': 'h264', 'capture_quality': 'custom', 'render_device': 'auto', 'wf_no_dmabuf': False,
+    'preview_resolution': 'native', 'preview_fps': 'source',
     'export_codec': 'libx264', 'export_quality': 20,
     'gsr_binary': 'auto', 'wf_recorder_binary': '',
     'speech_binary': '', 'speech_model': '',
@@ -34,6 +35,17 @@ def validate_capture_resolution(value):
     raise ValueError('capture_resolution must be native, 720p, 1080p, 1440p, 4k, or an object with even width and height from 32 to 32768.')
 
 
+def validate_preview_resolution(value):
+    if isinstance(value, str) and value in ('native', '1080p', '1440p', '4k'):
+        return value
+    if isinstance(value, dict):
+        try:
+            return validate_capture_resolution(value)
+        except ValueError:
+            pass
+    raise ValueError('preview_resolution must be native, 1080p, 1440p, 4k, or an object with even width and height from 32 to 32768.')
+
+
 def validate_config(values):
     if not isinstance(values,dict):raise ValueError('Settings must be a JSON object.')
     unknown=set(values)-set(DEFAULTS)
@@ -46,6 +58,9 @@ def validate_config(values):
     for key,choices in [('gpu_vendor',('auto','nvidia','amd','intel')),('capture_backend',('auto','gsr')),('capture_codec',CAPTURE_CODECS),('capture_quality',CAPTURE_QUALITIES),('gsr_source',('gsr','layer','auto','off')),('export_codec',CODECS)]:
         if result[key] not in choices:raise ValueError(key+' must be one of: '+', '.join(choices))
     result['capture_resolution']=validate_capture_resolution(result['capture_resolution'])
+    result['preview_resolution']=validate_preview_resolution(result['preview_resolution'])
+    if result['preview_fps'] != 'source' and not (type(result['preview_fps']) is int and result['preview_fps'] in (60,120)):
+        raise ValueError('preview_fps must be source, 60 or 120.')
     targets=result['capture_targets']
     if not isinstance(targets,list) or len(targets)>16 or any(not isinstance(x,str) or not x or len(x)>256 or any(c in x for c in ('\n','\r','\0','|')) for x in targets):raise ValueError('capture_targets must contain at most 16 individual GSR sources.')
     if len(set(targets))!=len(targets):raise ValueError('Capture targets must be unique.')

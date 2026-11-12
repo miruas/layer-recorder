@@ -17,15 +17,28 @@ from .studio_model import clip_duration,parse_srt
 from .studio_render import export_studio,run_process,media_fingerprint
 
 
-def preview_options(model,max_width=960):
-    factor=min(1,max_width/model['width'],640/model['height']);return {'size':(max(2,round(model['width']*factor/2)*2),max(2,round(model['height']*factor/2)*2)),'fps':24,'quality':28,'preset':'ultrafast','proxy':True}
+def preview_options(model,max_width=None,max_height=None,fps=None,size=None,proxy=False):
+    """Source-rate preview, with caller-selected bounds or exact output size."""
+    rate=float(model.get('fps',30) if fps is None else fps)
+    if not math.isfinite(rate) or rate<1:raise ValueError('Invalid preview frame rate.')
+    rate=min(120,rate)
+    if size is None:
+        width=float(max_width or model['width']);height=float(max_height or model['height'])
+        if not math.isfinite(width) or not math.isfinite(height) or width<2 or height<2:raise ValueError('Invalid preview size.')
+        factor=min(1,width/model['width'],height/model['height'],4096/model['width'],4096/model['height'])
+        size=(max(2,round(model['width']*factor/2)*2),max(2,round(model['height']*factor/2)*2))
+    if not isinstance(size,(list,tuple)) or len(size)!=2:raise ValueError('Preview size requires width and height.')
+    size=tuple(int(value) for value in size)
+    if not all(2<=value<=4096 for value in size):raise ValueError('Invalid preview size.')
+    return {'size':size,'fps':rate,'quality':20,'preset':'ultrafast','proxy':bool(proxy)}
 
 
-def preview_file(path,model,cancel=None,progress=None,width=960):
+def preview_file(path,model,cancel=None,progress=None,width=None,options=None):
     path,project=load_project(path)
+    options=options or preview_options(model,width)
     root=CACHE/'studio-previews';root.mkdir(exist_ok=True)
-    key=hashlib.sha256((str(path)+json.dumps(model,sort_keys=True)+str(width)+media_fingerprint(path,project,model)).encode()).hexdigest()[:24];dest=root/(key+'.mp4')
-    if not dest.exists():export_studio(path,dest,preview_options(model,width),progress,cancel,model=model)
+    key=hashlib.sha256((str(path)+json.dumps(model,sort_keys=True)+json.dumps(options,sort_keys=True)+media_fingerprint(path,project,model)).encode()).hexdigest()[:24];dest=root/(key+'.mp4')
+    if not dest.exists():export_studio(path,dest,options,progress,cancel,model=model)
     return str(dest)
 
 

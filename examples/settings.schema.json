@@ -239,6 +239,57 @@
           }
         }
       ]
+    },
+    "preview_resolution": {
+      "default": "native",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "native",
+            "1080p",
+            "1440p",
+            "4k"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "width",
+            "height"
+          ],
+          "properties": {
+            "width": {
+              "type": "integer",
+              "minimum": 32,
+              "maximum": 32768,
+              "multipleOf": 2
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 32,
+              "maximum": 32768,
+              "multipleOf": 2
+            }
+          }
+        }
+      ]
+    },
+    "preview_fps": {
+      "default": "source",
+      "oneOf": [
+        {
+          "const": "source"
+        },
+        {
+          "type": "integer",
+          "enum": [
+            60,
+            120
+          ]
+        }
+      ]
     }
   }
 }
