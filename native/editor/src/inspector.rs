@@ -1677,6 +1677,7 @@ fn drag_i64(ui: &mut Ui, value: &mut i64, min: i64, max: i64, speed: f64) -> boo
 }
 
 fn color_row(ui: &mut Ui, id: egui::Id, value: &mut String) -> bool {
+    ui.horizontal(|ui| {
     let mut changed = false;
     let mut rgb = parse_hex(value).unwrap_or([255, 255, 255]);
     if ui.color_edit_button_srgb(&mut rgb).changed() {
@@ -1706,6 +1707,7 @@ fn color_row(ui: &mut Ui, id: egui::Id, value: &mut String) -> bool {
         *data.get_temp_mut_or_insert_with(text_id, || value.clone()) = text;
     });
     changed
+    }).inner
 }
 
 fn keyframe_table(
