@@ -16,6 +16,15 @@ pub fn resolved_settings(root:&Path)->Result<Value>{
  if !out.status.success(){bail!("{}",String::from_utf8_lossy(&out.stderr).trim());}Ok(serde_json::from_slice(&out.stdout)?)
 }
 static SETTINGS_WRITES:std::sync::Mutex<()>=std::sync::Mutex::new(());
+pub fn save_capture_advanced(value:&Value)->Result<()> {
+ let _guard=SETTINGS_WRITES.lock().map_err(|_|anyhow::anyhow!("Settings save lock is unavailable."))?;
+ save_capture_advanced_at(&settings_path(),value)
+}
+fn save_capture_advanced_at(file:&Path,value:&Value)->Result<()> {
+ let mut raw:Value=if file.is_file(){serde_json::from_slice(&fs::read(&file)?)?}else{json!({})};
+ if !raw.is_object()||!value.is_object(){bail!("Capture settings must be an object.");}raw["capture_advanced"]=value.clone();
+ let parent=file.parent().context("Settings folder")?;fs::create_dir_all(parent)?;let mut tmp=tempfile::NamedTempFile::new_in(parent)?;serde_json::to_writer_pretty(&mut tmp,&raw)?;tmp.flush()?;tmp.as_file().sync_all()?;tmp.persist(file)?;Ok(())
+}
 pub fn save_library(library:&str)->Result<()> {
  let _guard=SETTINGS_WRITES.lock().map_err(|_|anyhow::anyhow!("Settings save lock is unavailable."))?;
  let target=expand(library);fs::create_dir_all(target)?;
@@ -96,6 +105,16 @@ pub fn instance(open:Option<PathBuf>)->Result<Option<Instance>>{
 #[cfg(test)]
 mod tests{
  use super::*;
+ #[test]
+ fn advanced_capture_save_preserves_unrelated_preferences_and_refuses_invalid_files(){
+  let directory=tempfile::tempdir().unwrap();let file=directory.path().join("settings.json");
+  let original=json!({"capture_resolution":"1080p","capture_codec":"hevc","unknown":{"keep":true},"buffer":300});fs::write(&file,serde_json::to_vec(&original).unwrap()).unwrap();
+  save_capture_advanced_at(&file,&json!({"cursor":false,"tune":"performance"})).unwrap();let saved:Value=serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+  for key in ["capture_resolution","capture_codec","unknown","buffer"]{assert_eq!(saved[key],original[key]);}
+  assert_eq!(saved["capture_advanced"]["cursor"],false);
+  fs::write(&file,b"bad JSON").unwrap();assert!(save_capture_advanced_at(&file,&json!({})).is_err());assert_eq!(fs::read(&file).unwrap(),b"bad JSON");
+ }
+
  #[test]
  fn gsr_action_rejects_unknown_commands_before_spawning(){
   let error=gsr_action(Path::new("."),"definitely-not-gsr").unwrap_err().to_string();

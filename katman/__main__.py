@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from .common import APP, CACHE, CONFIG, SOCKET, request
 
@@ -41,11 +42,25 @@ def ensure_daemon():
 
 
 def main():
+    # Exact native GSR passthrough keeps every upstream flag available without
+    # changing Layer's managed independent-source capture or RAM replay buffer.
+    if sys.argv[1:2] in (["gsr-native"],["gsr-ipc"]):
+        from .common import settings
+        from .hardware import gsr_program
+        arguments=sys.argv[2:]
+        if arguments[:1] == ["--"]: arguments=arguments[1:]
+        program=gsr_program(settings())
+        if sys.argv[1] == "gsr-ipc":
+            import shutil
+            recorder=Path(shutil.which(program) or program)
+            program=str(recorder.with_name("gsr-cli"))
+        os.execvp(program,[program,*arguments])
     parser = argparse.ArgumentParser(prog="layer",description="Layer multi-source recorder and editor")
     parser.add_argument("command", nargs="?", default="ui",
-                        choices=["ui", "download-model", "overlay", "autostart", "status", "record", "replay", "save-1", "save-5", "shutdown", "export", "bridge", "app-name", "doctor", "config", "gsr"])
+                        choices=["ui", "download-model", "overlay", "autostart", "status", "record", "replay", "save-1", "save-5", "shutdown", "export", "bridge", "app-name", "doctor", "config", "gsr", "gsr-native", "gsr-ipc"])
     parser.add_argument("path", nargs="?")
     parser.add_argument("--output")
+    parser.add_argument("--fast",action="store_true",help="Copy an eligible original video without re-encoding.")
     parser.add_argument("--profile",choices=["auto","nvidia","amd","intel"],default="auto")
     args = parser.parse_args()
     try:
@@ -115,6 +130,9 @@ def main():
             from .export import export_project
             if not args.path or not args.output:
                 parser.error("export requires a project path and --output")
+            if args.fast:
+                binary=APP/'bin/layer-studio'
+                os.execv(str(binary),[str(binary),'--quick-export',args.path,'--output',args.output])
             print(export_project(args.path, args.output))
             return
         if args.command == "autostart":

@@ -43,8 +43,8 @@ def _failure(reason, error, transient, static=False):
 
 def _standalone(target):
     """A GSR-owned explicit source that is not a discoverable monitor."""
-    return (target in ('portal', 'focused') or target.isdecimal() or
-            target.startswith('/dev/video'))
+    from .configuration import static_capture_target
+    return static_capture_target(target)
 
 
 def _placeholder(target):
@@ -116,11 +116,12 @@ def _selected_items(all_items, targets, static_items):
         if target in static_items:
             selected.append(static_items[target])
             continue
-        item = by_name.get(target)
+        from .configuration import capture_target_base
+        item = by_name.get(capture_target_base(target))
         if item is None:
             missing.append(target)
         else:
-            selected.append(item)
+            selected.append({**item, 'name':target})
     return selected, missing
 
 
@@ -175,7 +176,7 @@ def display_inventory(root, cfg, capabilities=None):
                                 _transient_exception(error), static)
 
     selected, missing = _selected_items(all_items, targets, static_items)
-    direct = {item['name'] for item in all_items} | set(static_items)
+    direct = {item['name'] for item in all_items} | {item['name'] for item in selected} | set(static_items)
 
     if not selected:
         reason = ('no-active-hardware' if _no_active_hardware()

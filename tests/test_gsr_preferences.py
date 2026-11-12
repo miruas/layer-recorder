@@ -187,7 +187,7 @@ class GsrEffectiveSettings(unittest.TestCase):
             gsr(record_options={"fps": 0}),
             gsr(record_options={"fps": 241}),
             gsr(record_options={"video_bitrate": 999}),
-            gsr(record_options={"codec": "vp9"}),
+            gsr(record_options={"codec": "unsupported-codec"}),
             gsr(record_options={"video_quality": "lossless"}),
             gsr(replay={"time": 1}),
             gsr(replay={"short_save_duration": "30"}),
@@ -220,7 +220,7 @@ class GsrEffectiveSettings(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_effective_settings({"replay_short": 301, "replay_long": 300})
         with self.assertRaises(ValueError):
-            validate_effective_settings({"capture_codec": "vp9"})
+            validate_effective_settings({"capture_codec": "unsupported-codec"})
         with self.assertRaises(ValueError):
             validate_effective_settings({"capture_quality": "lossless"})
         with self.assertRaises(ValueError):
@@ -236,6 +236,39 @@ class GsrCommonSettings(unittest.TestCase):
         if gsr_value is not None:
             gsr_file.write_text(json.dumps(gsr_value))
         return layer_file, gsr_file
+
+    def test_advanced_qp_validates_after_canonical_quality_merge(self):
+        from katman.common import settings as common_settings
+        with tempfile.TemporaryDirectory() as directory:
+            layer_file, gsr_file = self._files(directory,
+                {"capture_advanced":{"bitrate_mode":"qp"}},
+                {"replay":{"record_options":{"video_quality":"high"}}})
+            with patch("katman.common.SETTINGS_FILE",layer_file), patch.dict(os.environ,{"LAYER_GSR_CONFIG":str(gsr_file)}):
+                self.assertEqual(common_settings()["capture_quality"],"high")
+                gsr_file.write_text(json.dumps({"replay":{"record_options":{"video_quality":"custom"}}}))
+                with self.assertRaisesRegex(ValueError,"named capture_quality"):
+                    common_settings()
+                gsr_file.unlink()
+                with self.assertRaisesRegex(ValueError,"named capture_quality"):
+                    common_settings()
+
+    def test_cpu_codec_validation_uses_effective_codec(self):
+        from katman.common import settings as common_settings
+        with tempfile.TemporaryDirectory() as directory:
+            layer_file,gsr_file=self._files(directory,
+                {"capture_codec":"hevc","capture_advanced":{"encoder":"cpu"}},
+                {"replay":{"record_options":{"codec":"h264"}}})
+            with patch("katman.common.SETTINGS_FILE",layer_file), patch.dict(os.environ,{"LAYER_GSR_CONFIG":str(gsr_file)}):
+                self.assertEqual(common_settings()["capture_codec"],"h264")
+                gsr_file.write_text(json.dumps({"replay":{"record_options":{"codec":"hevc"}}}))
+                with self.assertRaisesRegex(ValueError,"CPU encoding"):
+                    common_settings()
+
+    def test_local_sources_keep_strict_combination_validation(self):
+        from katman.configuration import validate_config
+        for mode in ({"gsr_preferences":False},{"gsr_source":"layer"},{"gsr_source":"off"}):
+            with self.subTest(mode=mode),self.assertRaisesRegex(ValueError,"named capture_quality"):
+                validate_config({**mode,"capture_advanced":{"bitrate_mode":"qp"}})
 
     def test_common_settings_mode_precedence_and_no_export_mutation(self):
         from katman.common import settings as common_settings

@@ -66,6 +66,59 @@ def source_frame_interval(file,mtime,size):
     return float(b)/float(a) if float(a)>0 else 1/30
 
 
+
+@functools.lru_cache(maxsize=128)
+def source_geometry(file,mtime,size,ctime):
+    """Actual decoded dimensions, not possibly stale project metadata."""
+    try:
+        info=subprocess.check_output(['ffprobe','-v','error','-select_streams','v:0','-show_entries','stream=width,height','-of','json',file],text=True,timeout=10)
+        stream=json.loads(info)['streams'][0]
+        return int(stream['width']),int(stream['height'])
+    except (OSError,ValueError,KeyError,IndexError,subprocess.SubprocessError):return None
+
+
+def static_value(item,key,default):
+    points=item.get('keys',{}).get(key,[])
+    if not points:return float(item.get(key,default))
+    values=[float(point[1]) for point in points]
+    return values[0] if all(value==values[0] for value in values) else None
+
+
+def thread_count(options,key,default):
+    value=options.get(key,default)
+    if type(value) is not int or not 0<=value<=64:raise ValueError(key+' must be an integer between 0 (automatic) and 64.')
+    return value
+
+
+def video_encoder_options(options):
+    """Codec-specific speed controls; never reinterpret the quality setting."""
+    codec=options.get('codec','libx264');quality=options.get('quality',20)
+    args=['-c:v',codec]
+    if codec.endswith('_nvenc'):
+        preset=options.get('preset','p4')
+        if not isinstance(preset,str) or preset not in {'p1','p2','p3','p4','p5','p6','p7','fast','medium','slow'}:raise ValueError('NVENC preset must be p1 through p7, fast, medium or slow.')
+        args+=['-preset',preset,'-rc','vbr','-cq',str(quality),'-b:v','0']
+    elif codec.endswith('_vaapi'):
+        if 'preset' in options:raise ValueError('VAAPI uses vaapi_quality for its device-specific speed level, not a software preset.')
+        args+=['-rc_mode','CQP','-qp',str(quality)]
+        if 'vaapi_quality' in options:
+            level=options['vaapi_quality']
+            if type(level) is not int or not 0<=level<=64:raise ValueError('VAAPI speed level must be an integer between 0 and 64; supported levels depend on the driver.')
+            args+=['-quality',str(level)]
+    elif codec=='libaom-av1':
+        speed=options.get('cpu_used',6)
+        if type(speed) is not int or not 0<=speed<=8:raise ValueError('AV1 cpu_used must be an integer between 0 and 8.')
+        args+=['-cpu-used',str(speed),'-crf',str(quality),'-b:v','0']
+    else:
+        preset=options.get('preset','fast')
+        if not isinstance(preset,str) or preset not in {'ultrafast','superfast','veryfast','faster','fast','medium','slow','slower','veryslow','placebo'}:raise ValueError('Invalid software encoder preset.')
+        args+=['-preset',preset,'-crf',str(quality)]
+        if codec=='libx265':
+            threads=thread_count(options,'threads',4)
+            pools=(f'pools={threads}:frame-threads={min(2,threads)}:' if threads else '')
+            args+=['-x265-params',pools+'log-level=error']
+    return args
+
 def preview_project_snapshot(path,snapshot):
     """Validate in-memory preview sources with the same folder boundary as disk."""
     if not isinstance(snapshot,dict) or snapshot.get('format')!='katman' or snapshot.get('version')!=1 or not isinstance(snapshot.get('sources'),list):
@@ -110,10 +163,10 @@ def caption_ass(captions,style,canvas):
 
 def compile_graph(folder,project,model,tmp,options=None,window=None,frame=False):
     from .editing import annotation_image
-    options=options or {};origin,end=window or (0,duration(model));span=max(.04,end-origin)
+    options=options or {};optimize=options.get('optimize_graph',True);origin,end=window or (0,duration(model));span=max(.04,end-origin)
     native_w,native_h=model['width'],model['height'];width,height=options.get('size',(native_w,native_h));factor=min(width/native_w,height/native_h)
     cw,ch=max(2,round(native_w*factor/2)*2),max(2,round(native_h*factor/2)*2);fps=options.get('fps',model.get('fps',30))
-    sources={s['id']:s for s in project['sources']};args=['ffmpeg','-hide_banner','-v','error','-y','-nostdin','-filter_complex_threads','2'];graph=[] if options.get('audio_only') else [f'color=c=black:s={cw}x{ch}:r={fps}:d={number(span)}[background]'];video='background';audio=[];input_index=0;counter=0
+    sources={s['id']:s for s in project['sources']};args=['ffmpeg','-hide_banner','-v','error','-y','-nostdin','-filter_complex_threads',str(thread_count(options,'filter_threads',2))];graph=[] if options.get('audio_only') else [f'color=c=black:s={cw}x{ch}:r={fps}:d={number(span)}[background]'];video='background';audio=[];input_index=0;counter=0
     for track in model['tracks']:
         if options.get('audio_only') and track['kind']=='video' or (frame or options.get('video_only')) and track['kind']=='audio':continue
         if track.get('mute') and track['kind']=='audio' or not track.get('visible',True) and track['kind']=='video':continue
@@ -157,7 +210,23 @@ def compile_graph(folder,project,model,tmp,options=None,window=None,frame=False)
                         filters+=[f"lut3d=file='{quote(lut)}'"]
                     if clip.get('blackout'):filters+=['drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill']
                     w=f'max(2,trunc(({curve(clip,"w",local,source.get("width",cw))})*{number(factor)}/2)*2)';h=f'max(2,trunc(({curve(clip,"h",local,source.get("height",ch))})*{number(factor)}/2)*2)'
-                    filters+=['format=rgba',f"scale=w='{w}':h='{h}':eval=frame:flags=bilinear",'setsar=1']
+                    static_w=static_value(clip,'w',source.get('width',cw));static_h=static_value(clip,'h',source.get('height',ch))
+                    static_size=None
+                    if optimize and static_w is not None and static_h is not None:
+                        quantized_factor=float(number(factor))
+                        static_size=(max(2,math.trunc(float(number(static_w))*quantized_factor/2)*2),max(2,math.trunc(float(number(static_h))*quantized_factor/2)*2))
+                    filters+=['format=rgba']
+                    # A dimension-identity scale may still perform RGBA ->
+                    # YUVA420 conversion with bilinear chroma sampling. Keep it
+                    # unless a subsequent RGB-only opacity filter forces RGBA.
+                    # Still-image dimensions are fixed; video may renegotiate
+                    # dimensions mid-stream despite its initial probe metadata.
+                    rgb_opacity=clip.get('opacity',1)!=1 and not clip.get('keys',{}).get('opacity') and not clip.get('fade_in') and not clip.get('fade_out')
+                    uncropped=all(clip.get(key,default)==default for key,default in [('crop_x',0),('crop_y',0),('crop_w',1),('crop_h',1)])
+                    can_skip=image and static_size and rgb_opacity and uncropped and not clip.get('rotation') and not clip.get('keys',{}).get('rotation') and not clip.get('border_width')
+                    if not (can_skip and static_size==source_geometry(str(file),file.stat().st_mtime_ns,file.stat().st_size,file.stat().st_ctime_ns)):
+                        filters+=[f'scale={static_size[0]}:{static_size[1]}:eval=init:flags=bilinear' if static_size else f"scale=w='{w}':h='{h}':eval=frame:flags=bilinear"]
+                    filters+=['setsar=1']
                     if clip.get('border_width',0):filters+=[f'drawbox=x=0:y=0:w=iw:h=ih:color={clip.get("border_color","#ffffff").replace("#","0x")}:t={max(1,round(clip["border_width"]*factor))}']
                     x=f'({curve(clip,"x",local,0)})*{number(factor)}';y=f'({curve(clip,"y",local,0)})*{number(factor)}'
                     rotation=clip.get('rotation',0) or clip.get('keys',{}).get('rotation')
@@ -210,7 +279,13 @@ def compile_graph(folder,project,model,tmp,options=None,window=None,frame=False)
             stroke={**ann,'tool':kind};annotation_image({'annotations':[stroke]},size,overlay);args+=['-framerate',str(fps),'-loop','1','-i',str(overlay)];idx=input_index;input_index+=1
             x=f'({curve(ann,"x",local,0)})*{number(factor)}';y=f'({curve(ann,"y",local,0)})*{number(factor)}'
             aw=f'max(2,({curve(ann,"w",local,native_w)})*{number(factor)})';ah=f'max(2,({curve(ann,"h",local,native_h)})*{number(factor)})'
-            filters=f"format=rgba,scale=w='{aw}':h='{ah}':eval=frame"
+            static_w=static_value(ann,'w',native_w);static_h=static_value(ann,'h',native_h)
+            static_size=None
+            if optimize and static_w is not None and static_h is not None:
+                static_size=(max(2,math.trunc(float(number(static_w))*float(number(factor)))),max(2,math.trunc(float(number(static_h))*float(number(factor)))))
+            filters='format=rgba'
+            identity=static_size==size and not ann.get('keys',{}).get('opacity') and ann.get('opacity',1)==1
+            if not (optimize and identity):filters+=f',scale={static_size[0]}:{static_size[1]}:eval=init' if static_size else f",scale=w='{aw}':h='{ah}':eval=frame"
             if ann.get('keys',{}).get('opacity'):
                 alpha=curve(ann,'opacity',local.replace('t','T'),1);filters+=f",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*({alpha})'"
             elif ann.get('opacity',1)!=1:filters+=f",colorchannelmixer=aa={number(ann['opacity'])}"
@@ -221,7 +296,13 @@ def compile_graph(folder,project,model,tmp,options=None,window=None,frame=False)
         if captions:
             file=tmp/'captions.ass';file.write_text(caption_ass(captions,model.get('subtitle_style',{}),(native_w,native_h)),encoding='utf8')
             graph.append(f"[{video}]ass=filename='{quote(file)}'[captioned]");video='captioned'
-    if not options.get('audio_only'):graph.append(f'[{video}]'+('format=rgba,' if options.get('pixel_format')=='rgba' else '')+f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,{"format=nv12,hwupload" if (not frame and options.get("codec","").endswith("_vaapi")) else "format="+options.get("pixel_format","yuv420p")}[vout]')
+    if not options.get('audio_only'):
+        final=[]
+        if not optimize or (cw,ch)!=(width,height):
+            if options.get('pixel_format')=='rgba':final+=['format=rgba']
+            final+=[f'scale={width}:{height}:force_original_aspect_ratio=decrease',f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2']
+        final+=['format=nv12,hwupload' if (not frame and options.get('codec','').endswith('_vaapi')) else 'format='+options.get('pixel_format','yuv420p')]
+        graph.append(f'[{video}]'+','.join(final)+'[vout]')
     if audio:graph.append(''.join(audio)+f'amix=inputs={len(audio)}:normalize=0:duration=longest,alimiter=limit=0.95:latency=1[aout]')
     elif not frame and not options.get('video_only'):graph.append(f'anullsrc=r=48000:cl=stereo,atrim=duration={number(span)}[aout]')
     if (not frame and not options.get('audio_only') and options.get('codec','').endswith('_vaapi')):
@@ -254,15 +335,8 @@ def export_studio(path,destination,options=None,progress=None,cancel=None,model=
                 codec={'.wav':'pcm_s16le','.mp3':'libmp3lame'}.get(ext.lower(),'aac');args+=['-c:a',codec,'-ar','48000']
                 if codec!='pcm_s16le':args+=['-b:a','192k']
             else:
-                codec=options.get('codec','libx264');quality=options.get('quality',20)
-                args+=['-c:v',codec]
-                if codec.endswith('_nvenc'):args+=['-preset','p4','-rc','vbr','-cq',str(quality),'-b:v','0']
-                elif codec.endswith('_vaapi'):args+=['-rc_mode','CQP','-qp',str(quality)]
-                elif codec=='libaom-av1':args+=['-cpu-used','6','-crf',str(quality),'-b:v','0']
-                else:
-                    args+=['-preset',options.get('preset','fast'),'-crf',str(quality)]
-                    if codec=='libx265':args+=['-x265-params','pools=4:frame-threads=2:log-level=error']
-                args+=['-threads','4','-r',str(options.get('fps',model.get('fps',30))),'-c:a','aac','-b:a','192k','-ar','48000']
+                args+=video_encoder_options(options)
+                args+=['-threads',str(thread_count(options,'threads',4)),'-r',str(options.get('fps',model.get('fps',30))),'-c:a','aac','-b:a','192k','-ar','48000']
                 if ext.lower() in ('.mp4','.mov'):args+=['-movflags','+faststart']
             args+=['-progress','pipe:1','-stats_period','0.2',str(output)]
             total=(window[1]-window[0]) if window else duration(model)

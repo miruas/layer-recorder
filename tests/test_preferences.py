@@ -47,7 +47,7 @@ class Preferences(unittest.TestCase):
     def test_capture_codecs_preserve_hdr_and_auto_but_reject_unknown(self):
         for codec in ('auto','h264','hevc','hevc_10bit','hevc_hdr','av1','av1_10bit','av1_hdr'):
             self.assertEqual(validate_config({'capture_codec':codec})['capture_codec'],codec)
-        with self.assertRaises(ValueError):validate_config({'capture_codec':'vp9'})
+        with self.assertRaises(ValueError):validate_config({'capture_codec':'unsupported-codec'})
     def test_capture_quality_presets_and_custom_validate(self):
         for quality in ('custom','medium','high','very_high','ultra'):
             self.assertEqual(validate_config({'capture_quality':quality})['capture_quality'],quality)

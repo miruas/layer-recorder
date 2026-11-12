@@ -193,3 +193,9 @@ accurate compositor. A missing privacy overlay never permits displaying an
 unprocessed source/base picture. These are internal preview limits, not extra
 settings to add to the JSON file. See [Preview performance](PERFORMANCE.md) for
 cache behavior and measurement limits.
+
+## Advanced native GSR options
+
+Use Preferences → Advanced GSR capture options or the validated `capture_advanced` object. Saved overrides apply at the next capture session, preserving the current RAM replay buffer. See [GSR CLI compatibility](GSR_CLI.md) for every flag, source modifier and managed exception. `layer gsr-native -- ...` forwards arguments directly to the selected native recorder for unrestricted upstream workflows outside the independent-source session.
+
+See [Quick export](FAST_EXPORT.md) for original-video packet copying and codec-specific render speed controls.

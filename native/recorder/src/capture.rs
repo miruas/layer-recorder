@@ -158,17 +158,19 @@ impl Recorder {
         self.origin = now();
         let result = (|| -> Result<()> {
             for p in plan["tracks"].as_array().context("Capture plan tracks")? {
-                let command: Vec<String> = p["command"]
+                let mut command: Vec<String> = p["command"]
                     .as_array()
                     .context("Capture command")?
                     .iter()
                     .map(|v| v.as_str().unwrap_or("").to_string())
                     .collect();
-                let meta = if p["meta"]["type"] == "video" {
+                if p["meta"]["type"] == "audio" { configure_audio(&mut command, &self.config)?; }
+                let mut meta = if p["meta"]["type"] == "video" {
                     let spec = crate::hotplug::DisplaySpec::from_value(p)?;
                     self.video_generations.insert(spec.key.clone(), 1);
                     spec.stamped_meta(1)
                 } else { p["meta"].clone() };
+                if meta["type"] == "audio" { meta["audio_codec"] = json!(self.config["capture_advanced"]["audio_codec"].as_str().unwrap_or("opus")); }
                 let mut track = Track::spawn(
                     self.root.as_ref().unwrap(),
                     self.origin,
@@ -187,7 +189,7 @@ impl Recorder {
                 bail!("No GSR sources were selected.");
             }
             // Portal selection is interactive; allow time for the user to grant consent.
-            let timeout = if self.tracks.iter().any(|t| t.meta["name"] == "portal") {
+            let timeout = if self.tracks.iter().any(|t| t.meta["name"].as_str().is_some_and(|v| v.split(';').next() == Some("portal"))) {
                 120.
             } else {
                 10.
@@ -212,7 +214,7 @@ impl Recorder {
                 thread::sleep(Duration::from_millis(50));
             }
             self.running = true;
-            let is_static=self.config["capture_targets"].as_array().is_some_and(|targets|targets.iter().filter_map(Value::as_str).any(|v|v=="portal"||v=="focused"||v.starts_with("/dev/video")||v.chars().all(|c|c.is_ascii_digit())));
+            let is_static=self.config["capture_targets"].as_array().is_some_and(|targets|targets.iter().filter_map(Value::as_str).any(|v|{let base=v.split(';').next().unwrap_or(v); matches!(base,"portal"|"focused"|"region"|"screen"|"screen-direct")||base.starts_with("/dev/video")||base.starts_with("v4l2:")||base.starts_with("window:")||base.starts_with("0x")||base.contains('+')||base.chars().all(|c|c.is_ascii_digit())}));
             self.inventory=if is_static {None}else{Some(crate::video_inventory::Inventory::new(&self.application_root))};
             self.revision = u64::MAX;
             self.discover_audio()?;
@@ -260,7 +262,7 @@ impl Recorder {
                 t.stop()?;
             }
         }
-        for g in groups {
+        for mut g in groups {
             if self
                 .tracks
                 .iter_mut()
@@ -276,7 +278,9 @@ impl Recorder {
                 continue;
             }
             self.last_spawn.insert(g.key.clone(), elapsed);
-            let command=vec![self.program.clone(),"-a".into(),g.selector.clone(),"-ac".into(),"opus".into(),"-ab".into(),"256".into(),"-c".into(),"segment".into(),"-ffmpeg-opts".into(),"segment_time=2;segment_format=matroska;segment_list={list};reset_timestamps=1;segment_format_options=cluster_time_limit=250:flush_packets=1".into(),"-write-first-frame-ts".into(),"yes".into(),"-o".into(),"{output}".into(),"-v".into(),"no".into()];
+            let mut command=vec![self.program.clone(),"-a".into(),g.selector.clone(),"-ac".into(),"opus".into(),"-ab".into(),"256".into(),"-c".into(),"segment".into(),"-ffmpeg-opts".into(),"segment_time=2;segment_format=matroska;segment_list={list};reset_timestamps=1;segment_format_options=cluster_time_limit=250:flush_packets=1".into(),"-write-first-frame-ts".into(),"yes".into(),"-o".into(),"{output}".into(),"-v".into(),"no".into()];
+            configure_audio(&mut command, &self.config)?;
+            g.meta["audio_codec"] = json!(self.config["capture_advanced"]["audio_codec"].as_str().unwrap_or("opus"));
             let mut track = Track::spawn(
                 self.root.as_ref().unwrap(),
                 self.origin,
@@ -750,6 +754,43 @@ impl Recorder {
         Ok(path)
     }
 }
+// Python validates the public schema. Keep audio argv construction defensive as
+// this function also handles newly discovered application streams after startup.
+fn configure_audio(command: &mut Vec<String>, config: &Value) -> Result<()> {
+    let advanced = &config["capture_advanced"];
+    let codec = advanced["audio_codec"].as_str().unwrap_or("opus");
+    if !["opus", "aac", "mp3"].contains(&codec) { bail!("Unsupported GSR audio codec"); }
+    let bitrate = advanced["audio_bitrate"].as_u64().unwrap_or(256);
+    if bitrate > 50000 { bail!("GSR audio bitrate exceeds 50000 kbps"); }
+    for (flag, value) in [("-ac", codec.to_string()), ("-ab", bitrate.to_string())] {
+        if let Some(index) = command.iter().position(|v| v == flag) {
+            *command.get_mut(index + 1).context("Missing audio flag value")? = value;
+        } else { command.extend([flag.into(), value]); }
+    }
+    for (key, flag) in [("verbose", "-v"), ("exclude_metadata", "-exclude-metadata"), ("gl_debug", "-gl-debug")] {
+        if let Some(value) = advanced[key].as_bool() {
+            let value = if value { "yes" } else { "no" }.to_string();
+            if let Some(index) = command.iter().position(|v| v == flag) {
+                *command.get_mut(index + 1).context("Missing audio flag value")? = value;
+            } else { command.extend([flag.into(), value]); }
+        }
+    }
+    if let Some(options) = advanced["audio_options"].as_object().filter(|v| !v.is_empty()) {
+        let allowed = ["aac_coder", "aac_pce", "compression_level", "application", "frame_duration", "vbr", "cutoff"];
+        let mut pairs = vec![];
+        for (key, value) in options {
+            if !allowed.contains(&key.as_str()) { bail!("Unsupported GSR audio option"); }
+            let value = value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string());
+            if value.is_empty() || value.len() > 128 || !value.bytes().all(|c| c.is_ascii_alphanumeric() || b"_.+:/-".contains(&c)) {
+                bail!("Invalid GSR audio option value");
+            }
+            pairs.push(format!("{key}={value}"));
+        }
+        command.extend(["-ffmpeg-audio-opts".into(), pairs.join(";")]);
+    }
+    Ok(())
+}
+
 fn save_track(
     t: &mut Track,
     start: f64,
@@ -894,6 +935,14 @@ fn audio_content(path: &Path, start: f64, span: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn advanced_audio_preserves_managed_segment_options() {
+        let mut command = vec!["gsr".into(), "-ac".into(), "opus".into(), "-ab".into(), "256".into(), "-c".into(), "segment".into()];
+        configure_audio(&mut command, &json!({"capture_advanced":{"audio_codec":"aac","audio_bitrate":192,"audio_options":{"aac_coder":"fast"},"exclude_metadata":true}})).unwrap();
+        assert_eq!(command[2], "aac"); assert_eq!(command[4], "192"); assert_eq!(command[6], "segment");
+        assert!(command.contains(&"aac_coder=fast".to_string()));
+        assert!(configure_audio(&mut command, &json!({"capture_advanced":{"audio_options":{"segment_time":"10"}}})).is_err());
+    }
     #[test]
     fn saved_media_combines_ram_and_spool_without_destroying_sources() {
         let ram = buffer_storage::create().unwrap();

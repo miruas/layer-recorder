@@ -16,16 +16,7 @@ from pathlib import Path
 # GSR's public quality presets.  ``custom`` means GSR stores a CBR bitrate in
 # ``record_options.video_bitrate`` instead of a preset name.
 CAPTURE_QUALITIES = ("custom", "medium", "high", "very_high", "ultra")
-CAPTURE_CODECS = (
-    "auto",
-    "h264",
-    "hevc",
-    "hevc_10bit",
-    "hevc_hdr",
-    "av1",
-    "av1_10bit",
-    "av1_hdr",
-)
+from .configuration import CAPTURE_CODECS, validate_capture_combination
 FLATPAK_APP_ID = "com.dec05eba.gpu_screen_recorder"
 
 _MISSING = object()
@@ -212,6 +203,8 @@ def _codec(value, key: str) -> str:
 
 def _uses_gsr(layer: dict) -> bool:
     """GSR is the default source; a Layer preference can opt out."""
+    if layer.get("gsr_source") in ("layer", "off"):
+        return False
     if "gsr_preferences" in layer:
         return bool(layer["gsr_preferences"])
     if "use_gsr_preferences" in layer:
@@ -232,6 +225,7 @@ def validate_effective_settings(settings: dict) -> dict:
     if not isinstance(settings, dict):
         raise ValueError("Settings must be a dictionary.")
 
+    validate_capture_combination(settings)
     if "capture_resolution" in settings:
         from .configuration import validate_capture_resolution
         validate_capture_resolution(settings["capture_resolution"])
@@ -284,9 +278,9 @@ def effective_settings(layer: dict, gsr: dict | None, mode: str = "replay") -> d
     mode = _mode(mode)
     result = copy.deepcopy(layer)
     if not _uses_gsr(layer):
-        return result
+        return validate_effective_settings(result)
     if gsr is None:
-        return result
+        return validate_effective_settings(result)
     if not isinstance(gsr, dict):
         raise ValueError("GSR preferences must be a dictionary or None.")
 
