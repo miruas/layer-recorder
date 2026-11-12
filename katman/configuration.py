@@ -150,6 +150,21 @@ def validate_capture_target(target):
     return target
 
 
+def validate_capture_combination(config):
+    """Check actual quality/codec combinations after canonical GSR merging.
+
+    Raw Layer files can contain placeholders overridden by canonical GSR
+    preferences. Call this on effective settings before persisting or capture.
+    """
+    advanced=validate_capture_advanced(config.get('capture_advanced',{}))
+    if advanced.get('encoder')=='cpu' and config.get('capture_codec','h264') not in ('auto','h264'):
+        raise ValueError('GSR CPU encoding supports only auto/h264.')
+    mode=advanced.get('bitrate_mode')
+    quality=config.get('capture_quality','custom')
+    if mode=='cbr' and quality!='custom':raise ValueError('CBR needs capture_quality custom and bitrate.')
+    if mode in ('auto','qp','vbr') and quality=='custom':raise ValueError('QP/VBR/auto need a named capture_quality preset.')
+
+
 def validate_config(values):
     if not isinstance(values,dict):raise ValueError('Settings must be a JSON object.')
     unknown=set(values)-set(DEFAULTS)
@@ -162,12 +177,8 @@ def validate_config(values):
     for key,choices in [('gpu_vendor',('auto','nvidia','amd','intel')),('capture_backend',('auto','gsr')),('capture_codec',CAPTURE_CODECS),('capture_quality',CAPTURE_QUALITIES),('gsr_source',('gsr','layer','auto','off')),('export_codec',CODECS)]:
         if result[key] not in choices:raise ValueError(key+' must be one of: '+', '.join(choices))
     result['capture_advanced']=validate_capture_advanced(result['capture_advanced'])
-    advanced=result['capture_advanced']
-    if advanced.get('encoder')=='cpu' and result['capture_codec'] not in ('auto','h264'):
-        raise ValueError('GSR CPU encoding supports only auto/h264.')
-    mode=advanced.get('bitrate_mode')
-    if mode=='cbr' and result['capture_quality']!='custom':raise ValueError('CBR needs capture_quality custom and bitrate.')
-    if mode in ('auto','qp','vbr') and result['capture_quality']=='custom':raise ValueError('QP/VBR/auto need a named capture_quality preset.')
+    if not result['gsr_preferences'] or result['gsr_source'] in ('layer','off'):
+        validate_capture_combination(result)
     result['capture_resolution']=validate_capture_resolution(result['capture_resolution'])
     result['preview_resolution']=validate_preview_resolution(result['preview_resolution'])
     if result['preview_fps'] != 'source' and not (type(result['preview_fps']) is int and result['preview_fps'] in (60,120)):

@@ -736,99 +736,132 @@
       }
     }
   },
-  "description": "Layer settings. Python validate_config is authoritative for replay_short <= replay_long <= buffer, unique shortcut/modifier keys, and strict integer types. JSON Schema integer semantics also admit integral JSON numbers such as 1.0.",
+  "description": "Layer settings. Python validate_config is authoritative for replay_short <= replay_long <= buffer, unique shortcut/modifier keys, and strict integer types. JSON Schema integer semantics also admit integral JSON numbers such as 1.0. Quality/codec cross-field rules on raw Layer settings apply only when canonical GSR preferences are disabled; effective merged settings are always validated by Layer.",
   "allOf": [
     {
       "if": {
-        "required": [
-          "capture_advanced"
-        ],
-        "properties": {
-          "capture_advanced": {
+        "anyOf": [
+          {
             "required": [
-              "encoder"
+              "gsr_preferences"
             ],
             "properties": {
-              "encoder": {
-                "const": "cpu"
+              "gsr_preferences": {
+                "const": false
               }
             }
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "capture_codec": {
-            "enum": [
-              "auto",
-              "h264"
-            ]
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "required": [
-          "capture_advanced"
-        ],
-        "properties": {
-          "capture_advanced": {
+          },
+          {
             "required": [
-              "bitrate_mode"
+              "gsr_source"
             ],
             "properties": {
-              "bitrate_mode": {
-                "const": "cbr"
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "capture_quality": {
-            "const": "custom"
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "required": [
-          "capture_advanced"
-        ],
-        "properties": {
-          "capture_advanced": {
-            "required": [
-              "bitrate_mode"
-            ],
-            "properties": {
-              "bitrate_mode": {
+              "gsr_source": {
                 "enum": [
-                  "auto",
-                  "qp",
-                  "vbr"
+                  "layer",
+                  "off"
                 ]
               }
             }
           }
-        }
+        ]
       },
       "then": {
-        "required": [
-          "capture_quality"
-        ],
-        "properties": {
-          "capture_quality": {
-            "enum": [
-              "medium",
-              "high",
-              "very_high",
-              "ultra"
-            ]
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "capture_advanced"
+              ],
+              "properties": {
+                "capture_advanced": {
+                  "required": [
+                    "encoder"
+                  ],
+                  "properties": {
+                    "encoder": {
+                      "const": "cpu"
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "capture_codec": {
+                  "enum": [
+                    "auto",
+                    "h264"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "capture_advanced"
+              ],
+              "properties": {
+                "capture_advanced": {
+                  "required": [
+                    "bitrate_mode"
+                  ],
+                  "properties": {
+                    "bitrate_mode": {
+                      "const": "cbr"
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "capture_quality": {
+                  "const": "custom"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "capture_advanced"
+              ],
+              "properties": {
+                "capture_advanced": {
+                  "required": [
+                    "bitrate_mode"
+                  ],
+                  "properties": {
+                    "bitrate_mode": {
+                      "enum": [
+                        "auto",
+                        "qp",
+                        "vbr"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "capture_quality"
+              ],
+              "properties": {
+                "capture_quality": {
+                  "enum": [
+                    "medium",
+                    "high",
+                    "very_high",
+                    "ultra"
+                  ]
+                }
+              }
+            }
           }
-        }
+        ]
       }
     }
   ]

@@ -35,7 +35,7 @@ class AdvancedGsr(unittest.TestCase):
         for value in ({'capture_advanced':{'encoder':'cpu'},'capture_codec':'hevc'},
                       {'capture_advanced':{'bitrate_mode':'cbr'},'capture_quality':'high'},
                       {'capture_advanced':{'bitrate_mode':'vbr'}}):
-            with self.subTest(value=value), self.assertRaises(ValueError):validate_config(value)
+            with self.subTest(value=value), self.assertRaises(ValueError):validate_config({**value,'gsr_preferences':False})
 
     def test_unsafe_or_managed_options_rejected(self):
         for value in ({'extra_args':['-o','/tmp/other']},{'keyint':3},{'keyint':float('nan')},

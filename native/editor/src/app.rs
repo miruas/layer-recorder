@@ -1649,6 +1649,8 @@ impl Studio {
             let mut open = true;
             let mut gsr_action = None;
             egui::Window::new("Preferences")
+                .vscroll(true)
+                .max_height((ctx.content_rect().height()-64.).max(320.))
                 .open(&mut open)
                 .default_width(560.)
                 .resizable(false)
