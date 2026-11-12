@@ -43,6 +43,7 @@ pub struct Frame {
 #[derive(Default)]
 pub struct Statistics {
     pub frames: u64,
+    pub held_frames: u64,
     pub base_renders: u64,
     pub effect_pixels: u64,
     pub last_cpu_ms: f64,
@@ -114,8 +115,48 @@ impl Compositor {
                             s.last_cpu_ms = started.elapsed().as_secs_f64() * 1000.;
                         }
                         Err(error) => {
+                            renderer.cached_canvas = None;
                             *this.error.lock().unwrap() = Some(error);
                         }
+                    }
+                }
+            })),
+        }
+    }
+    pub fn invalidate_cached(&self) {
+        if let Some(renderer) = self.inner.lock().unwrap().as_mut() {
+            renderer.cached_canvas = None;
+        }
+    }
+    pub fn has_cached(&self, canvas: [f32; 2]) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|r| r.cached_canvas == Some(canvas))
+    }
+    /// Present only the last fully processed frame while a newer sprite/frame
+    /// loads. Never consume QA capture requests or present a partial render.
+    pub fn cached_callback(self: &Arc<Self>, rect: Rect, canvas: [f32; 2]) -> egui::PaintCallback {
+        let this = self.clone();
+        egui::PaintCallback {
+            rect,
+            callback: Arc::new(egui_glow::CallbackFn::new(move |info, painter| {
+                let mut state = this.inner.lock().unwrap();
+                if let Some(renderer) = state.as_mut()
+                    && renderer.cached_canvas == Some(canvas)
+                {
+                    match unsafe { renderer.present(painter.gl(), painter, &info) } {
+                        Ok(()) => this.statistics.lock().unwrap().held_frames += 1,
+                        Err(error) => {
+                            renderer.cached_canvas = None;
+                            *this.error.lock().unwrap() = Some(error);
+                        }
+                    }
+                    unsafe {
+                        painter
+                            .gl()
+                            .bind_framebuffer(glow::FRAMEBUFFER, painter.intermediate_fbo());
                     }
                 }
             })),
@@ -144,6 +185,7 @@ struct Renderer {
     max_size: u32,
     base_key: Option<u64>,
     base_renders: u64,
+    cached_canvas: Option<[f32; 2]>,
 }
 const MESH_VERTEX: &str = r#"
 in vec2 a_pos; in vec2 a_uv; in vec4 a_color;
@@ -283,6 +325,7 @@ impl Renderer {
             size: [0, 0],
             base_key: None,
             base_renders: 0,
+            cached_canvas: None,
             max_size: gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE).max(0) as u32,
         })
     }
@@ -485,6 +528,7 @@ impl Renderer {
         info: &egui::PaintCallbackInfo,
         frame: &Frame,
     ) -> Result<u64, String> {
+        self.cached_canvas = None;
         self.targets(gl, frame.size)?;
         gl.disable(glow::DEPTH_TEST);
         gl.disable(glow::CULL_FACE);
@@ -600,6 +644,16 @@ impl Renderer {
                 "GPU effect failed {pending_error:#x}; using accurate compositor."
             ));
         }
+        self.present(gl, painter, info)?;
+        self.cached_canvas = Some(frame.canvas);
+        Ok(pixels)
+    }
+    unsafe fn present(
+        &self,
+        gl: &glow::Context,
+        painter: &egui_glow::Painter,
+        info: &egui::PaintCallbackInfo,
+    ) -> Result<(), String> {
         gl.bind_framebuffer(glow::FRAMEBUFFER, painter.intermediate_fbo());
         let v = info.viewport_in_pixels();
         let clip = info.clip_rect_in_pixels();
@@ -625,7 +679,7 @@ impl Renderer {
                 "GPU preview error {error:#x}; using accurate compositor."
             ));
         }
-        Ok(pixels)
+        Ok(())
     }
     unsafe fn readback(&self, gl: &glow::Context) -> Vec<u8> {
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.targets[0].fbo));

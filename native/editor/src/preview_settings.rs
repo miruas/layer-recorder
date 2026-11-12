@@ -74,8 +74,7 @@ impl PreviewSettings {
     /// Maximum raster size; never stretch or upscale a smaller canvas.
     /// Every mode, including Native and Custom, is bounded to 3840 x 2160.
     /// A degenerate canvas produces the smallest supported 2 x 2 placeholder.
-    pub fn size(self, canvas: [u32; 2]) -> [u32; 2] {
-        let source = [canvas[0].max(2), canvas[1].max(2)];
+    pub fn bounds(self) -> [u32; 2] {
         let bounds = match self.resolution {
             Resolution::Native => [3840, 2160],
             Resolution::FullHd => [1920, 1080],
@@ -83,6 +82,11 @@ impl PreviewSettings {
             Resolution::UltraHd => [3840, 2160],
             Resolution::Custom(value) => value,
         };
+        [bounds[0].min(3840).max(2), bounds[1].min(2160).max(2)]
+    }
+    pub fn size(self, canvas: [u32; 2]) -> [u32; 2] {
+        let source = [canvas[0].max(2), canvas[1].max(2)];
+        let bounds = self.bounds();
         let scale = (bounds[0] as f64 / source[0] as f64)
             .min(bounds[1] as f64 / source[1] as f64)
             .min(3840.0 / source[0] as f64)

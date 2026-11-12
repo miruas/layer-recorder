@@ -8,6 +8,7 @@ mod playback;
 mod fast_preview;
 mod gpu_effects;
 mod preview_settings;
+mod media_rate;
 mod preview_toolbar;
 mod overlay_cache;
 mod voiceover;
