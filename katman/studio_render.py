@@ -92,6 +92,22 @@ def media_fingerprint(path,project,model=None):
     return json.dumps(rows,separators=(',',':'))
 
 
+
+def caption_ass(captions,style,canvas):
+    """Canonical ASS used by exports and isolated caption sprites."""
+    native_w,native_h=canvas
+    def stamp(t):
+        cs=round(max(0,t)*100);seconds,cs=divmod(cs,100);minutes,seconds=divmod(seconds,60);hours,minutes=divmod(minutes,60);return f'{hours}:{minutes:02}:{seconds:02}.{cs:02}'
+    global_style=style
+    styles=[];events=[]
+    for i,caption in enumerate(captions):
+        style={**global_style,**caption.get('style',{})};font=style.get('font','Noto Sans').replace(',',' ');size=style.get('size',36);color=style.get('color','#ffffff').lstrip('#');ass_color='&H00'+color[4:6]+color[2:4]+color[0:2]
+        name='Caption'+str(i);styles.append(f'Style: {name},{font},{size},{ass_color},&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,{style.get("margin_left",20)},{style.get("margin_right",20)},{style.get("margin_bottom",20)},1')
+        text=caption['text'].replace('\\','\\\\').replace('{','\\{').replace('}','\\}').replace('\r','').replace('\n','\\N')
+        events.append(f'Dialogue: 0,{stamp(caption["start"])},{stamp(caption["end"])},{name},,0,0,0,,{text}')
+    header=f'[Script Info]\nScriptType: v4.00+\nPlayResX: {native_w}\nPlayResY: {native_h}\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n'
+    return header+'\n'.join(styles)+'\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n'+'\n'.join(events)
+
 def compile_graph(folder,project,model,tmp,options=None,window=None,frame=False):
     from .editing import annotation_image
     options=options or {};origin,end=window or (0,duration(model));span=max(.04,end-origin)
@@ -203,16 +219,7 @@ def compile_graph(folder,project,model,tmp,options=None,window=None,frame=False)
     if model.get('subtitles') and not options.get('audio_only'):
         captions=[{**s,'start':max(0,s['start']-origin),'end':s['end']-origin} for s in model['subtitles'] if s['end']>origin and s['start']<end]
         if captions:
-            def stamp(t):
-                cs=round(max(0,t)*100);seconds,cs=divmod(cs,100);minutes,seconds=divmod(seconds,60);hours,minutes=divmod(minutes,60);return f'{hours}:{minutes:02}:{seconds:02}.{cs:02}'
-            styles=[];events=[]
-            for i,caption in enumerate(captions):
-                style={**model.get('subtitle_style',{}),**caption.get('style',{})};font=style.get('font','Noto Sans').replace(',',' ');size=style.get('size',36);color=style.get('color','#ffffff').lstrip('#');ass_color='&H00'+color[4:6]+color[2:4]+color[0:2]
-                name='Caption'+str(i);styles.append(f'Style: {name},{font},{size},{ass_color},&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,0,2,{style.get("margin_left",20)},{style.get("margin_right",20)},{style.get("margin_bottom",20)},1')
-                text=caption['text'].replace('\\','\\\\').replace('{','\\{').replace('}','\\}').replace('\r','').replace('\n','\\N')
-                events.append(f'Dialogue: 0,{stamp(caption["start"])},{stamp(caption["end"])},{name},,0,0,0,,{text}')
-            header=f'[Script Info]\nScriptType: v4.00+\nPlayResX: {native_w}\nPlayResY: {native_h}\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n'
-            file=tmp/'captions.ass';file.write_text(header+'\n'.join(styles)+'\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n'+'\n'.join(events),encoding='utf8')
+            file=tmp/'captions.ass';file.write_text(caption_ass(captions,model.get('subtitle_style',{}),(native_w,native_h)),encoding='utf8')
             graph.append(f"[{video}]ass=filename='{quote(file)}'[captioned]");video='captioned'
     if not options.get('audio_only'):graph.append(f'[{video}]'+('format=rgba,' if options.get('pixel_format')=='rgba' else '')+f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,{"format=nv12,hwupload" if (not frame and options.get("codec","").endswith("_vaapi")) else "format="+options.get("pixel_format","yuv420p")}[vout]')
     if audio:graph.append(''.join(audio)+f'amix=inputs={len(audio)}:normalize=0:duration=longest,alimiter=limit=0.95:latency=1[aout]')

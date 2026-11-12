@@ -41,6 +41,7 @@ pub enum Mark {
     Line(Vec<[f32; 2]>, Color32, f32, bool),
     Privacy([f32; 4], crate::gpu_effects::Privacy),
     Text(crate::overlay_cache::TextKey, [f32; 2], Color32),
+    Caption(crate::overlay_cache::CaptionKey),
 }
 #[derive(Clone)]
 pub struct Scene {
@@ -101,9 +102,10 @@ pub fn scene_with_options(
         layers: vec![],
         marks: vec![],
     };
-    if model["subtitles"]
-        .as_array()
-        .is_some_and(|xs| xs.iter().any(|s| active(s, time)))
+    if !gpu
+        && model["subtitles"]
+            .as_array()
+            .is_some_and(|xs| xs.iter().any(|s| active(s, time)))
     {
         return None;
     }
@@ -240,18 +242,22 @@ pub fn scene_with_options(
             }
         }
     }
-    append_marks(&mut result, model, time, gpu)?;
+    let raster = raster_size(model, bounds);
+    append_marks(&mut result, model, time, gpu, raster)?;
     Some(result)
 }
 /// The moving picture can be decoded independently while annotations remain
 /// live GPU overlays. Subtitles still use the accurate fallback until their
 /// isolated rasterization path is supported.
 pub fn overlay_scene(model: &Value, time: f64) -> Option<Scene> {
+    overlay_scene_at(model, time, raster_size(model, [3840, 2160]))
+}
+pub fn overlay_scene_at(model: &Value, time: f64, raster: [u32; 2]) -> Option<Scene> {
     let mut result = Scene {
         layers: vec![],
         marks: vec![],
     };
-    append_marks(&mut result, model, time, true)?;
+    append_marks(&mut result, model, time, true, raster)?;
     Some(result)
 }
 pub fn base_fingerprint(model: &Value) -> Option<u64> {
@@ -261,7 +267,7 @@ pub fn base_fingerprint(model: &Value) -> Option<u64> {
     }
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     for (key, value) in model.as_object()? {
-        if key != "annotations" {
+        if !["annotations", "subtitles", "subtitle_style"].contains(&key.as_str()) {
             key.hash(&mut hash);
             value.hash(&mut hash);
         }
@@ -269,7 +275,19 @@ pub fn base_fingerprint(model: &Value) -> Option<u64> {
     Some(hash.finish())
 }
 fn overlay_eligible(model: &Value) -> bool {
-    !model["subtitles"].as_array().is_some_and(|v| !v.is_empty())
+    model["subtitles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .all(|row| {
+            row["text"].is_string()
+                && row["start"]
+                    .as_f64()
+                    .is_some_and(|n| n.is_finite() && n >= 0.)
+                && row["end"].as_f64().is_some_and(|n| {
+                    n.is_finite() && n > row["start"].as_f64().unwrap_or(f64::INFINITY)
+                })
+        })
         && model["annotations"]
             .as_array()
             .into_iter()
@@ -294,9 +312,16 @@ pub fn playback_base(model: &Value) -> Option<Value> {
     }
     let mut base = model.clone();
     base["annotations"] = serde_json::json!([]);
+    base["subtitles"] = serde_json::json!([]);
     Some(base)
 }
-fn append_marks(result: &mut Scene, model: &Value, time: f64, gpu: bool) -> Option<()> {
+fn append_marks(
+    result: &mut Scene,
+    model: &Value,
+    time: f64,
+    gpu: bool,
+    raster: [u32; 2],
+) -> Option<()> {
     for ann in model["annotations"]
         .as_array()
         .into_iter()
@@ -425,6 +450,10 @@ fn append_marks(result: &mut Scene, model: &Value, time: f64, gpu: bool) -> Opti
             _ => return None,
         }
     }
+    if gpu && let Some(key) = caption_at(model, time, raster) {
+        result.marks.push(Mark::Caption(key));
+    }
+
     Some(())
 }
 #[derive(Default)]
@@ -756,7 +785,7 @@ impl Cache {
                         *c,
                     );
                 }
-                Mark::Privacy(..) | Mark::Text(..) => {}
+                Mark::Privacy(..) | Mark::Text(..) | Mark::Caption(..) => {}
                 Mark::Line(points, c, w, closed) => {
                     let pts = points.iter().map(|v| p(*v)).collect();
                     painter.add(if *closed {
@@ -768,6 +797,90 @@ impl Cache {
             }
         }
     }
+}
+fn raster_size(model: &Value, bounds: [u32; 2]) -> [u32; 2] {
+    let canvas = [
+        n(model, "width", 1920.).max(2.),
+        n(model, "height", 1080.).max(2.),
+    ];
+    let factor = (bounds[0] as f64 / canvas[0])
+        .min(bounds[1] as f64 / canvas[1])
+        .min(1.);
+    canvas.map(|n| ((n * factor).floor() as u32 / 2 * 2).max(2))
+}
+fn caption_time(time: f64) -> f64 {
+    (time.max(0.) * 100.).round_ties_even() / 100.
+}
+fn caption_active(row: &Value, time: f64) -> bool {
+    time >= caption_time(n(row, "start", 0.)) && time < caption_time(n(row, "end", 0.))
+}
+fn caption_at(
+    model: &Value,
+    time: f64,
+    raster: [u32; 2],
+) -> Option<crate::overlay_cache::CaptionKey> {
+    let captions:Vec<Value>=model["subtitles"].as_array().into_iter().flatten().filter(|row|caption_active(row,time)).map(|row|serde_json::json!({"text":row["text"],"style":row.get("style").cloned().unwrap_or_else(||serde_json::json!({}))})).collect();
+    if captions.is_empty() {
+        return None;
+    }
+    Some(crate::overlay_cache::CaptionKey {
+        canvas: [
+            n(model, "width", 1920.) as u32,
+            n(model, "height", 1080.) as u32,
+        ],
+        raster,
+        captions,
+        style: model
+            .get("subtitle_style")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})),
+    })
+}
+pub fn caption_keys(scene: &Scene) -> Vec<crate::overlay_cache::CaptionKey> {
+    scene
+        .marks
+        .iter()
+        .filter_map(|mark| {
+            if let Mark::Caption(key) = mark {
+                Some(key.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+pub fn upcoming_captions(
+    model: &Value,
+    time: f64,
+    raster: [u32; 2],
+) -> Vec<crate::overlay_cache::CaptionKey> {
+    let mut times: Vec<f64> = model["subtitles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|row| {
+            [
+                caption_time(n(row, "start", 0.)),
+                caption_time(n(row, "end", 0.)),
+            ]
+        })
+        .filter(|t| t.is_finite() && *t > time && *t <= time + 2.)
+        .collect();
+    times.sort_by(f64::total_cmp);
+    times.dedup();
+    let current = caption_at(model, time, raster);
+    let mut result = vec![];
+    for t in times {
+        if let Some(key) = caption_at(model, t, raster) {
+            if Some(&key) != current.as_ref() && !result.contains(&key) {
+                result.push(key);
+                if result.len() == 2 {
+                    break;
+                }
+            }
+        }
+    }
+    result
 }
 pub fn text_keys(scene: &Scene) -> Vec<crate::overlay_cache::TextKey> {
     scene
@@ -801,6 +914,24 @@ pub fn mark_ops(
     let mut result = vec![];
     for mark in &scene.marks {
         match mark {
+            Mark::Caption(key) => {
+                let (texture, box_) = overlays.caption_sprite(key)?;
+                let sx = canvas[0] / key.raster[0] as f32;
+                let sy = canvas[1] / key.raster[1] as f32;
+                result.push(Op::Mesh(
+                    image_mesh(
+                        texture,
+                        [
+                            box_[0] as f32 * sx,
+                            box_[1] as f32 * sy,
+                            box_[2] as f32 * sx,
+                            box_[3] as f32 * sy,
+                        ],
+                        Color32::WHITE,
+                    ),
+                    None,
+                ));
+            }
             Mark::Fill(rect, _) => result.push(Op::Privacy {
                 rect: *rect,
                 kind: Privacy::Black,
@@ -957,6 +1088,50 @@ mod tests {
         (project, model)
     }
     #[test]
+    fn captions_stay_last_reuse_static_content_and_prefetch_next_state() {
+        let (p, mut m) = fixture();
+        m["annotations"] = json!([{"kind":"redact","start":0,"end":3,"x":0,"y":0,"w":100,"h":100}]);
+        let base = base_fingerprint(&m);
+        m["subtitle_style"] = json!({"font":"Noto Sans","size":32,"color":"#ff8000"});
+        m["subtitles"] =
+            json!([{"text":"First","start":0,"end":0.5},{"text":"Second","start":0.5,"end":2}]);
+        assert_eq!(base_fingerprint(&m), base);
+        let a = overlay_scene_at(&m, 0.25, [640, 360]).unwrap();
+        let b = overlay_scene_at(&m, 0.3, [640, 360]).unwrap();
+        assert_eq!(caption_keys(&a), caption_keys(&b));
+        assert!(matches!(a.marks.last(), Some(Mark::Caption(_))));
+        let next = overlay_scene_at(&m, 0.75, [640, 360]).unwrap();
+        assert_ne!(caption_keys(&a), caption_keys(&next));
+        assert!(upcoming_captions(&m, 0.25, [640, 360]).contains(&caption_keys(&next)[0]));
+        let full = scene_with_options(
+            Path::new("/r/project.katman"),
+            &p,
+            &m,
+            0.25,
+            [3840, 2160],
+            true,
+        )
+        .unwrap();
+        assert!(matches!(full.marks.last(), Some(Mark::Caption(_))));
+        let raw = playback_base(&m).unwrap();
+        assert!(
+            raw["annotations"].as_array().unwrap().is_empty()
+                && raw["subtitles"].as_array().unwrap().is_empty()
+        );
+        assert_eq!(raw["tracks"], m["tracks"]);
+    }
+    #[test]
+    fn caption_visibility_uses_ass_centisecond_rounding_and_half_open_ends() {
+        let row = json!({"text":"Fractional","start":0.005,"end":0.025});
+        assert!(caption_active(&row, 0.));
+        assert!(caption_active(&row, 0.019));
+        assert!(!caption_active(&row, 0.02));
+        let row = json!({"start":0.015,"end":0.04});
+        assert!(!caption_active(&row, 0.01));
+        assert!(caption_active(&row, 0.02));
+        assert!(!caption_active(&row, 0.04));
+    }
+    #[test]
     fn gpu_overlays_preserve_source_detail_and_do_not_invalidate_underlay() {
         let (p, mut m) = fixture();
         let path = Path::new("/r/project.katman");
@@ -982,7 +1157,12 @@ mod tests {
         assert!(raw["annotations"].as_array().unwrap().is_empty());
         assert_eq!(raw["tracks"], m["tracks"]);
         m["subtitles"] = json!([{"text":"Caption","start":0,"end":3}]);
-        assert!(playback_base(&m).is_none());
+        assert!(
+            playback_base(&m).unwrap()["subtitles"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
     }
     #[test]
     fn geometry_edits_keep_the_decoded_frame_key() {

@@ -79,6 +79,34 @@ def main():
                 if name=='complex-underlay':assert metrics['underlay_renders']==1,metrics
                 else:assert metrics['source_decodes']==2 and metrics['underlay_renders']==0,metrics
             row={'case':name,'passed':True,'mean_absolute_rgb_error':round(mae,3),**metrics};results.append(row);print(json.dumps(row),flush=True)
+        # Two caption states in one process must reuse sprites and never capture
+        # the previous state's held frame. Compare caption pixels separately so
+        # a mostly unchanged source cannot hide missing glyphs. Use a full-chroma
+        # reference to avoid treating delivery YUV420 glyph-edge loss as a defect.
+        p=copy.deepcopy(project);m=copy.deepcopy(base)
+        m['annotations']=[{**marks[2],'x':0,'y':500,'w':1000,'h':140}]
+        m['subtitles']=[{'id':'first','start':0,'end':.5,'text':'FIRST — independent caption','style':{}},
+                        {'id':'second','start':.5,'end':1,'text':'SECOND — next caption','style':{}}]
+        m['subtitle_style']={'font':'Noto Sans','size':36,'color':'#ff8010','margin_left':70,'margin_right':70,'margin_bottom':28}
+        p['studio']=m;path=root/'caption-sequence.katman';path.write_text(json.dumps(p));sequence=out/'caption-sequence.png'
+        for index in range(2):sequence.with_name(sequence.stem+f'-{index}.png').unlink(missing_ok=True)
+        result=subprocess.run([str(binary),'--root',str(app_root),'--project',str(path),'--qa-preview',str(sequence),'--qa-positions','.25,.75','--qa-after','.7','--qa-size','950x740'],env=env,capture_output=True,text=True,timeout=40)
+        log=result.stdout+result.stderr;(out/'caption-sequence.log').write_text(log)
+        assert result.returncode==0 and log.count('LAYER_GPU_CAPTURE_OK')==2,log[-3000:]
+        for index,position in enumerate((.25,.75)):
+            golden=out/f'caption-{index}-reference.png';plain=out/f'caption-{index}-plain.png';golden.unlink(missing_ok=True);plain.unlink(missing_ok=True)
+            export_studio(path,golden,{'size':[1000,640],'pixel_format':'yuv444p'},model=m,window=(position,position+1/120),frame=True)
+            without=copy.deepcopy(m);without['subtitles']=[]
+            export_studio(path,plain,{'size':[1000,640],'pixel_format':'yuv444p'},model=without,window=(position,position+1/120),frame=True)
+            with Image.open(sequence.with_name(sequence.stem+f'-{index}.png')) as gpu,Image.open(golden) as reference,Image.open(plain) as underlay:
+                reference=reference.convert('RGB');gpu=gpu.convert('RGB')
+                mask=ImageChops.difference(reference,underlay.convert('RGB')).convert('L').point(lambda value:255 if value>16 else 0)
+                assert mask.getbbox(),'Caption reference contains no glyphs'
+                diff=ImageChops.difference(gpu,reference);mae=sum(ImageStat.Stat(diff).mean)/3;caption_mae=sum(ImageStat.Stat(diff,mask).mean)/3
+                assert mae<4 and caption_mae<15,('caption sequence',index,mae,caption_mae)
+                results.append({'case':f'caption-transition-{index}','passed':True,'mean_absolute_rgb_error':round(mae,3),'caption_rgb_error':round(caption_mae,3)})
+        rasters=[int(value) for value in re.findall(r'overlay_rasters=(\d+)',log)]
+        assert rasters and max(rasters)<=2,('Repeated caption rasterization',rasters)
         # One-pixel luminance detail must survive a native1080 preview. A960px
         # intermediate would average these alternating columns into grey.
         detail=media/'detail.mkv'

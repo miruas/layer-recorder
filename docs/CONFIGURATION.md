@@ -166,3 +166,30 @@ Preview cadence is limited to 120 FPS. Source frame rates such as 59.94 and
 can repeat frames; it does not synthesize additional motion detail or change
 the recording FPS. Higher-quality previews require more decoding and drawing
 work. These preferences never reduce capture FPS or alter export quality.
+
+
+For older recordings without source FPS metadata, the document opens before a
+best-effort background FFprobe check. Each probe has a two-second limit and the
+whole discovery call has a three-second budget. Only regular video files
+inside the recording folder are checked; unsafe paths and FIFOs are skipped.
+Existing source rate fields are preserved. Missing `avg_frame_rate` and
+`r_frame_rate` values are merged only into the same current document and
+matching source. Failure or timeout keeps the existing recording/canvas/default
+fallback. If a result changes Source-mode playback cadence, preview playback
+restarts at its current position. Explicit 60/120 FPS preview selections,
+capture FPS and editor/export model FPS are unchanged.
+
+Preview caption sprites use the export compositor's canonical libass font,
+color, line wrapping and margins. Supported per-caption style overrides are
+retained. Transparent edges are cropped while retaining the caption's canvas
+position; captions draw after privacy annotations. Caption edits update their
+sprites without invalidating the source/base picture. Current visible glyphs
+take priority over optional prefetch of caption transitions up to two seconds
+ahead. A single cancellable worker serves titles and captions with a shared
+64 MiB texture budget and at most 256 retained entries. A current request set contains at most 64 keys; its
+title requests are additionally limited to 32 MiB.
+Unsupported styles, over-budget requests and rasterization failures use the
+accurate compositor. A missing privacy overlay never permits displaying an
+unprocessed source/base picture. These are internal preview limits, not extra
+settings to add to the JSON file. See [Preview performance](PERFORMANCE.md) for
+cache behavior and measurement limits.

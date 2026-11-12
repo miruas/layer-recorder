@@ -33,6 +33,7 @@ struct Recording {
 enum Message {
     Font(Vec<u8>),
     Opened(u64, Result<Document, String>),
+    SourceRates(u64,PathBuf,Value),
     Gsr(GsrAction, Result<Value, String>),
     ScreenshotSaved(Result<PathBuf, String>),
     Library(Vec<Recording>),
@@ -140,6 +141,9 @@ struct Studio {
     qa_preview:Option<PathBuf>,
     qa_preview_requested:bool,
     qa_position:Option<f64>,
+    qa_positions:std::collections::VecDeque<f64>,
+    qa_sequence:bool,
+    qa_capture_index:u32,
     qa_overlay_steps:u32,
     qa_overlay_target:u32,
     qa_play_seconds:Option<f64>,
@@ -304,6 +308,8 @@ impl Studio {
             qa_preview:std::env::args().collect::<Vec<_>>().windows(2).find(|a|a[0]=="--qa-preview").map(|a|PathBuf::from(&a[1])),
             qa_play_seconds:std::env::args().collect::<Vec<_>>().windows(2).find(|a|a[0]=="--qa-play-seconds").and_then(|a|a[1].parse::<f64>().ok()).filter(|t|t.is_finite()&&*t>0.&&*t<=10.),qa_play_started:None,
             qa_preview_requested:false,qa_overlay_steps:0,qa_overlay_target:if std::env::args().any(|a|a=="--qa-overlay-edits"){60}else{0},
+            qa_positions:std::env::args().collect::<Vec<_>>().windows(2).find(|a|a[0]=="--qa-positions").map(|a|a[1].split(',').filter_map(|v|v.parse::<f64>().ok()).filter(|t|t.is_finite()&&*t>=0.).take(8).collect()).unwrap_or_default(),
+            qa_sequence:std::env::args().any(|a|a=="--qa-positions"),qa_capture_index:0,
             qa_position:std::env::args().collect::<Vec<_>>().windows(2).find(|a|a[0]=="--qa-position").and_then(|a|a[1].parse::<f64>().ok()).filter(|t|t.is_finite()&&*t>=0.),
             qa_panel: std::env::args().collect::<Vec<_>>().windows(2).find(|args|args[0]=="--qa-panel").map(|args|args[1].clone()),
             output_frame: None,
@@ -435,14 +441,16 @@ impl Studio {
             let result = saved.recv().map_err(|_| "The edit save service stopped.".to_string())
                 .and_then(|result| result)
                 .and_then(|()| Document::load(&path).map_err(|e| format!("{e:#}")));
+            let rates=result.as_ref().ok().map(|doc|(doc.path.clone(),json!({"sources":doc.project["sources"]})));
             let _ = tx.send(Message::Opened(generation, result));
+            if let Some((path,mut project))=rates{let _=crate::media_rate::enrich_missing_rates(&mut project,&path);let _=tx.send(Message::SourceRates(generation,path,project));}
         });
     }
     fn opened(&mut self, result: Result<Document, String>) {
         self.opening = false;
         match result {
             Ok(mut doc) => {
-                if let Some(t)=self.qa_position{doc.position=t.min(model::duration(&doc.model));}
+                if let Some(t)=self.qa_positions.pop_front().or(self.qa_position){doc.position=t.min(model::duration(&doc.model));}
                 self.playback = None;
                 self.preview = None;
                 self.texture = None;
@@ -457,6 +465,7 @@ impl Studio {
                 self.waveforms.clear();
                 let id=self.jobs.start_after(&self.root,"waveforms",json!({"path":doc.path}),self.saver.barrier(doc.path.clone()));self.job_context.insert(id,(doc.path.clone(),doc.revision));
                 self.document = Some(doc);
+                if let Some(gpu)=&self.gpu{gpu.invalidate_cached();}
                 self.fast_cache.clear();self.overlays.clear();self.playback_base=None;self.underlay=false;self.underlay_texture=None;self.underlay_cached=None;self.underlay_pending=None;self.fast_scene=None;self.fast_key=None;
                 self.library_open=false;
                 self.frame_due = Some(Instant::now() + Duration::from_millis(150));
@@ -647,12 +656,12 @@ impl Studio {
             if self.fast_key!=Some(key){
                 let gpu=self.gpu.is_some()&&!self.gpu_failed;
                 self.fast_scene=if self.playback.is_some(){
-                    if self.playback_base.is_some()&&gpu{crate::fast_preview::overlay_scene(&doc.model,doc.position)}else{None}
+                    if self.playback_base.is_some()&&gpu{crate::fast_preview::overlay_scene_at(&doc.model,doc.position,self.preview_settings.size([number(&doc.model,"width",1920.)as u32,number(&doc.model,"height",1080.)as u32]))}else{None}
                 }else{
-                    let source_bounds=self.preview_settings.size([3840,2160]);
+                    let source_bounds=self.preview_settings.bounds();
                     let scene=crate::fast_preview::scene_with_options(&doc.path,&doc.project,&doc.model,doc.position,source_bounds,gpu);
                     self.underlay=scene.is_none()&&gpu&&crate::fast_preview::base_fingerprint(&doc.model).is_some();
-                    if self.underlay{let overlay=crate::fast_preview::overlay_scene(&doc.model,doc.position);if overlay.is_none(){self.underlay=false;}overlay}else{scene}
+                    if self.underlay{let overlay=crate::fast_preview::overlay_scene_at(&doc.model,doc.position,self.preview_settings.size([number(&doc.model,"width",1920.)as u32,number(&doc.model,"height",1080.)as u32]));if overlay.is_none(){self.underlay=false;}overlay}else{scene}
                 };
                 self.fast_key=Some(key);
                 if self.playback.is_some()&&self.playback_base.is_some()&&self.fast_scene.is_none(){
@@ -661,13 +670,15 @@ impl Studio {
                 }
                 if let Some(scene)=&self.fast_scene{
                     if self.playback.is_none(){self.fast_cache.request(scene);}
-                    self.overlays.request(&crate::fast_preview::text_keys(scene));
+
                 }
             }
             if let Some(scene)=&self.fast_scene{
-                let texts=crate::fast_preview::text_keys(scene);
-                if self.fast_cache.failed(scene)||texts.iter().any(|key|self.overlays.failed(key)){self.fast_scene=None;self.underlay=false;self.texture=None;self.frame_revision=u64::MAX;self.frame_due=Some(Instant::now());self.playback=None;self.playback_base=None;}
-                else if !self.fast_cache.ready(scene)||texts.iter().any(|key|!self.overlays.ready(key)){ctx.request_repaint_after(Duration::from_millis(4));}
+                let texts=crate::fast_preview::text_keys(scene);let captions=crate::fast_preview::caption_keys(scene);
+                let raster=self.preview_settings.size([number(&doc.model,"width",1920.)as u32,number(&doc.model,"height",1080.)as u32]);let upcoming=crate::fast_preview::upcoming_captions(&doc.model,doc.position,raster);
+                self.overlays.request_layers(&texts,&captions,&upcoming);
+                if self.fast_cache.failed(scene)||(texts.iter().any(|key|self.overlays.failed(key))||captions.iter().any(|key|self.overlays.caption_failed(key))){self.fast_scene=None;self.underlay=false;self.texture=None;self.frame_revision=u64::MAX;self.frame_due=Some(Instant::now());self.playback=None;self.playback_base=None;}
+                else if !self.fast_cache.ready(scene)||(texts.iter().any(|key|!self.overlays.ready(key))||captions.iter().any(|key|!self.overlays.caption_ready(key))){ctx.request_repaint_after(Duration::from_millis(4));}
             }
         }
     }
@@ -722,6 +733,16 @@ impl Studio {
                     fonts.font_data.insert("Noto Sans".into(), egui::FontData::from_owned(bytes).into());
                     fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, "Noto Sans".into());
                     ctx.set_fonts(fonts);
+                }
+                Message::SourceRates(generation,path,project)=>{
+                    let previous=self.document.as_ref().map(|doc|self.preview_settings.fps(&doc.model,&doc.project));
+                    if generation==self.open_generation&&let Some(doc)=&mut self.document&&doc.path==path{
+                        for source in doc.project["sources"].as_array_mut().into_iter().flatten(){if let Some(probed)=project["sources"].as_array().and_then(|rows|rows.iter().find(|row|row["id"]==source["id"]&&row["file"]==source["file"])){
+                            for key in ["avg_frame_rate","r_frame_rate"]{if source.get(key).is_none()&&let Some(value)=probed.get(key){source[key]=value.clone();}}
+                        }}
+                    }
+                    let current=self.document.as_ref().map(|doc|self.preview_settings.fps(&doc.model,&doc.project));
+                    if generation==self.open_generation&&previous!=current&&self.preview_settings.frame_rate==crate::preview_settings::FrameRate::Source&&self.playback.is_some(){self.playback=None;self.playback_base=None;self.play(ctx);}
                 }
                 Message::Opened(generation, result) => {
                     if generation == self.open_generation { self.opened(result); }
@@ -1187,7 +1208,9 @@ impl Studio {
         let Some(doc)=&self.document else{return;};
         let position=if doc.position>=model::duration(&doc.model)-0.04{0.}else{doc.position};
         let canvas=[number(&doc.model,"width",1920.)as u32,number(&doc.model,"height",1080.)as u32];
-        let base=if self.gpu.is_some()&&!self.gpu_failed{crate::fast_preview::playback_base(&doc.model)}else{None};
+        let overlay=crate::fast_preview::overlay_scene_at(&doc.model,position,self.preview_settings.size(canvas));
+        let healthy=overlay.as_ref().is_some_and(|scene|crate::fast_preview::text_keys(scene).iter().all(|key|!self.overlays.known_failure(key))&&crate::fast_preview::caption_keys(scene).iter().all(|key|!self.overlays.known_caption_failure(key)));
+        let base=if self.gpu.is_some()&&!self.gpu_failed&&healthy{crate::fast_preview::playback_base(&doc.model)}else{None};
         match Playback::start_timeline(&self.root,&doc.path,base.as_ref().unwrap_or(&doc.model),&doc.project,position,canvas,self.preview_settings.size(canvas),self.preview_settings.fps(&doc.model,&doc.project)as f64,ctx.clone()){
             Ok(player)=>{self.playback=Some(player);self.playback_base=base;self.playback_clock=None;self.playback_first_frame=None;self.playback_frames=0;self.playback_fps=0.;self.want_play=false;},
             Err(error)=>self.error=error.to_string(),
@@ -1235,6 +1258,11 @@ impl Studio {
         }else{None};
         if let Some(frame)=gpu_frame{
             ui.painter().add(egui::Shape::Callback(self.gpu.as_ref().unwrap().callback(rect,frame)));
+        }else if self.fast_scene.is_some()&&!self.gpu_failed&&self.gpu.as_ref().is_some_and(|gpu|gpu.has_cached(native_canvas)){
+            ui.painter().add(egui::Shape::Callback(self.gpu.as_ref().unwrap().cached_callback(rect,native_canvas)));
+            let badge=Rect::from_min_size(rect.left_bottom()+Vec2::new(12.,-32.),Vec2::new(160.,24.));
+            ui.painter().rect_filled(badge,3.,Color32::from_black_alpha(220));
+            ui.painter().text(badge.center(),egui::Align2::CENTER_CENTER,"Updating preview…",egui::FontId::proportional(12.),Color32::WHITE);
         }else if self.playback.is_none()&&self.fast_scene.is_some()&&self.gpu.is_none(){
             self.fast_cache.paint(ui.painter(),rect,canvas_size,self.fast_scene.as_ref().unwrap());
         }else if self.fast_scene.is_none()&&let Some(texture)=self.texture.as_ref().filter(|_|self.playback.is_some()||self.frame_revision==doc.revision){
@@ -1813,7 +1841,7 @@ impl eframe::App for Studio {
             ctx.request_repaint_after(Duration::from_millis(4));
         }
         if self.qa_overlay_steps<self.qa_overlay_target&&self.startup.elapsed().as_secs_f64()>=self.qa_after{
-            let source_ready=self.fast_scene.as_ref().is_some_and(|scene|self.fast_cache.ready(scene)&&crate::fast_preview::text_keys(scene).iter().all(|key|self.overlays.ready(key)))&&(!self.underlay||self.underlay_cached==self.underlay_key());
+            let source_ready=self.fast_scene.as_ref().is_some_and(|scene|self.fast_cache.ready(scene)&&crate::fast_preview::text_keys(scene).iter().all(|key|self.overlays.ready(key))&&crate::fast_preview::caption_keys(scene).iter().all(|key|self.overlays.caption_ready(key)))&&(!self.underlay||self.underlay_cached==self.underlay_key());
             if source_ready&&let Some(doc)=&mut self.document{
                 if let Some(ann)=doc.model["annotations"].as_array_mut().and_then(|annotations|annotations.iter_mut().find(|ann|["redact","blur","pixelate"].contains(&ann["kind"].as_str().unwrap_or("")))){
                     let x=number(ann,"x",0.);ann["x"]=json!(x+if self.qa_overlay_steps%2==0{1.}else{-1.});doc.revision+=1;
@@ -1822,8 +1850,12 @@ impl eframe::App for Studio {
             }
         }
         if let Some(gpu)=&self.gpu{
-            if let Some(result)=gpu.take_capture(){match result{Ok(path)=>{let stats=gpu.statistics.lock().unwrap();println!("LAYER_GPU_CAPTURE_OK {} frames={} roi_pixels={} cpu_ms={:.3} source_decodes={} base_renders={} underlay_renders={} overlay_edits={}",path.display(),stats.frames,stats.effect_pixels,stats.last_cpu_ms,self.fast_cache.decoded,stats.base_renders,self.underlay_generation,self.qa_overlay_steps);},Err(error)=>eprintln!("GPU capture failed: {error}")};ctx.send_viewport_cmd(egui::ViewportCommand::Close);self.qa_exit=true;}
-            if self.startup.elapsed().as_secs_f64()>=self.qa_after&&self.qa_overlay_steps>=self.qa_overlay_target&&self.document.as_ref().is_some_and(|doc|self.fast_key==Some((doc.revision,doc.position.to_bits())))&&!self.qa_preview_requested&&let Some(path)=self.qa_preview.clone(){gpu.request_capture(path,ctx.clone());self.qa_preview_requested=true;ctx.request_repaint();}
+            if let Some(result)=gpu.take_capture(){
+                match result{Ok(path)=>{let stats=gpu.statistics.lock().unwrap();println!("LAYER_GPU_CAPTURE_OK {} frames={} roi_pixels={} cpu_ms={:.3} source_decodes={} base_renders={} underlay_renders={} overlay_edits={} overlay_rasters={} held_frames={}",path.display(),stats.frames,stats.effect_pixels,stats.last_cpu_ms,self.fast_cache.decoded,stats.base_renders,self.underlay_generation,self.qa_overlay_steps,self.overlays.rasterized,stats.held_frames);},Err(error)=>eprintln!("GPU capture failed: {error}")}
+                if let Some(position)=self.qa_positions.pop_front(){if let Some(doc)=&mut self.document{doc.position=position.min(model::duration(&doc.model));}self.fast_key=None;self.frame_due=Some(Instant::now());self.qa_preview_requested=false;self.qa_capture_index+=1;ctx.request_repaint();}
+                else{ctx.send_viewport_cmd(egui::ViewportCommand::Close);self.qa_exit=true;}
+            }
+            if self.startup.elapsed().as_secs_f64()>=self.qa_after&&self.qa_overlay_steps>=self.qa_overlay_target&&self.document.as_ref().is_some_and(|doc|self.fast_key==Some((doc.revision,doc.position.to_bits())))&&!self.qa_preview_requested&&let Some(path)=self.qa_preview.clone(){let path=if self.qa_sequence{path.with_file_name(format!("{}-{}.png",path.file_stem().unwrap_or_default().to_string_lossy(),self.qa_capture_index))}else{path};gpu.request_capture(path,ctx.clone());self.qa_preview_requested=true;ctx.request_repaint();}
         }
 
         if self.allow_close {

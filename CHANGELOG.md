@@ -2,6 +2,9 @@
 
 ## 0.8.0 (unreleased)
 
+- Keep privacy effects, titles and supported libass captions in bounded GPU overlay caches; retain the last complete preview while new glyphs or frames load.
+- Default to Native/source preview quality with configurable 1080p/1440p/4K/custom bounds and 60/120 FPS scheduling; discover missing legacy source rates in the background.
+
 - Replace the Qt archive/editor with one native Rust window; move loading, font discovery, waveform analysis, playback teardown and media work off the interface thread.
 - Preserve version-1 independent-source recordings and editing, with native voiceover, batch export, timeline zoom/snapping and real audio waveforms.
 - Read shared GSR recording/replay preferences and expose configurable short/long replay durations and editor shortcut in the normal GSR overlay.
