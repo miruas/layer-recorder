@@ -117,6 +117,10 @@ struct Studio {
     export_open: bool,
     export_codec: String,
     export_quality: i32,
+    advanced_draft: Value,
+    advanced_saved: bool,
+    export_fast: bool,
+    export_preset: String,
     export_audio: bool,
     export_fps: u32,
     export_size: [u32; 2],
@@ -291,6 +295,9 @@ impl Studio {
             export_open: false,
             export_codec: "libx264".into(),
             export_quality: 20,
+            advanced_draft: json!({}),advanced_saved:false,
+            export_fast: true,
+            export_preset: "fast".into(),
             export_audio: false,
             export_fps: 60,
             export_size: [1920, 1080],
@@ -316,6 +323,7 @@ impl Studio {
             drag_origin: None,
             timeline_zoom:1.,timeline_snap:true,crossfade_seconds:0.5,
         };
+        s.advanced_draft=s.cfg.get("capture_advanced").cloned().unwrap_or_else(||json!({}));
         s.export_codec = s.cfg["export_codec"].as_str().unwrap_or("libx264").into();
         eprintln!("LAYER_UI_BOOT initialized_ms={}",build_started.elapsed().as_millis());
         s.scan();
@@ -637,6 +645,14 @@ impl Studio {
         ctx.request_repaint_after(Duration::from_millis(50));
         true
     }
+    fn export_options(&self,allow_fast:bool)->Value{
+        let fast=allow_fast&&self.export_fast&&!self.export_audio&&self.document.as_ref().is_some_and(|d|crate::fast_export::plan(&d.project,&d.model).is_ok());
+        let mut options=json!({"codec":self.export_codec,"quality":self.export_quality,"audio_only":self.export_audio,"fps":self.export_fps,"size":self.export_size,"fast":fast});
+        if self.export_codec.ends_with("_nvenc"){options["preset"]=json!(match self.export_preset.as_str(){"ultrafast"=>"p1","slow"=>"p7",_=>"p4"});}
+        else if self.export_codec=="libaom-av1"{options["cpu_used"]=json!(match self.export_preset.as_str(){"ultrafast"=>8,"slow"=>4,_=>6});}
+        else if !self.export_codec.ends_with("_vaapi"){options["preset"]=json!(self.export_preset);}
+        options
+    }
     fn media_job(&mut self, op: &str, mut request: Value) {
         if self.jobs.busy(){self.error="Finish or cancel the current media operation first.".into();return;}
         if let Some(doc) = &self.document {
@@ -824,14 +840,14 @@ impl Studio {
                     }
                     "batch_export"=>{
                         let paths:Vec<_>=self.batch_selected.iter().map(|path|path.to_string_lossy().into_owned()).collect();
-                        self.progress=0.;self.jobs.start_after(&self.root,"batch_export",json!({"paths":paths,"output_directory":file,"options":{"codec":self.export_codec,"quality":self.export_quality,"audio_only":self.export_audio,"fps":self.export_fps,"size":self.export_size}}),self.saver.barrier_all(self.batch_selected.iter().cloned().collect()));self.export_open=false;
+                        self.progress=0.;self.jobs.start_after(&self.root,"batch_export",json!({"paths":paths,"output_directory":file,"options":self.export_options(false)}),self.saver.barrier_all(self.batch_selected.iter().cloned().collect()));self.export_open=false;
                     }
                     "export" => {
                         if file.exists() {
                             self.error =
                                 "Choose a new filename to preserve the existing export.".into();
                         } else {
-                            self.media_job("export",json!({"output":file,"options":{"codec":self.export_codec,"quality":self.export_quality,"audio_only":self.export_audio,"fps":self.export_fps,"size":self.export_size}}));
+                            self.media_job("export",json!({"output":file,"options":self.export_options(true)}));
                             self.export_open = false;
                         }
                     }
@@ -869,11 +885,12 @@ impl Studio {
                     let same_document=context.as_ref().is_some_and(|(path,_)|self.document.as_ref().is_some_and(|doc|&doc.path==path));
                     let current=context.as_ref().is_some_and(|(path,rev)|self.document.as_ref().is_some_and(|doc|&doc.path==path&&doc.revision==*rev));
                     if op=="waveforms"&&!same_document{continue;}
-                    if !current && !["export","export_srt","proxies","batch_export","waveforms"].contains(&op.as_str()){
+                    if !current && !["export","export_srt","proxies","batch_export","waveforms","capture_settings"].contains(&op.as_str()){
                         if op=="frame"{self.frame_due=Some(Instant::now());}else{self.want_play=false;self.error="The recording changed while this operation ran. Your newer edits were kept; run the operation again.".into();}continue;
                     }
                     match result {
                         Ok(data) => match op.as_str() {
+                            "capture_settings"=>{self.cfg["capture_advanced"]=data["capture_advanced"].clone();self.advanced_saved=true;},
                             "waveforms"=>{for item in data["items"].as_array().into_iter().flatten(){if let (Some(id),Some(seconds),Some(peaks))=(item["source_id"].as_str(),item["duration"].as_f64(),item["peaks"].as_array()){if seconds>0.{self.waveforms.insert(id.into(),(seconds,peaks.iter().map(|v|v.as_f64().unwrap_or(0.) as f32).collect()));}}}},
                             "frame" => {
                                 if let Some(file) = data["file"].as_str().or_else(|| data.as_str())
@@ -1655,6 +1672,14 @@ impl Studio {
                         }
                     });
                     ui.add_space(14.);
+                    egui::CollapsingHeader::new("Advanced GSR capture options").default_open(std::env::args().any(|a|a=="--qa-advanced")).show(ui,|ui|{
+                        egui::ScrollArea::vertical().id_salt("advanced-gsr-scroll").max_height(360.).show(ui,|ui|{
+                            if crate::advanced_capture::show(ui,&mut self.advanced_draft){self.advanced_saved=false;}
+                        });
+                        ui.label("Saved options apply when the next capture session starts. The current replay buffer stays running.");
+                        if ui.add_enabled(!self.jobs.busy(),egui::Button::new("Save capture options")).clicked(){self.jobs.start(&self.root,"capture_settings",json!({"capture_advanced":self.advanced_draft}));}
+                        if self.advanced_saved{ui.label("Capture options saved for the next session.");}
+                    });
                     ui.separator();
                     ui.label(RichText::new("Recording library").strong());
                     ui.add(
@@ -1692,7 +1717,14 @@ impl Studio {
                 .default_width(480.)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    egui::Grid::new("export-options")
+                    let eligibility=self.document.as_ref().map(|doc|crate::fast_export::plan(&doc.project,&doc.model)).unwrap_or_else(||Err(anyhow::anyhow!("Open a recording first.")));
+                    let can_copy=!self.batch_mode&&!self.export_audio&&eligibility.is_ok();
+                    ui.add_enabled(can_copy,egui::Checkbox::new(&mut self.export_fast,"Quick export · copy original video"));
+                    if can_copy&&self.export_fast{ui.label("Copies video without re-encoding. Selected audio is mixed separately.");}
+                    else if !self.batch_mode&&let Err(error)=&eligibility{ui.label(egui::RichText::new(format!("Render required: {error}")).small());}
+                    let render=!(can_copy&&self.export_fast);
+                    ui.add_space(8.);
+                    ui.add_enabled_ui(render,|ui|{egui::Grid::new("export-options")
                         .spacing(Vec2::new(20., 12.))
                         .show(ui, |ui| {
                             ui.label("Format / encoder");
@@ -1740,6 +1772,7 @@ impl Studio {
                             );
                             ui.end_row();
                         });
+                    ui.add_enabled_ui(!self.export_codec.ends_with("_vaapi"),|ui|{ui.horizontal(|ui|{ui.label("Encoding speed");egui::ComboBox::from_id_salt("export-speed").selected_text(match self.export_preset.as_str(){"ultrafast"=>"Fastest","slow"=>"Better compression",_=>"Balanced"}).show_ui(ui,|ui|{for(label,value)in[("Fastest","ultrafast"),("Balanced","fast"),("Better compression","slow")]{ui.selectable_value(&mut self.export_preset,value.into(),label);}});});});});
                     ui.checkbox(&mut self.export_audio, "Audio only");
                     ui.add_space(12.);
                     if button(ui, "Choose destination…", true).clicked() {
@@ -1903,7 +1936,7 @@ impl eframe::App for Studio {
                             .desired_width(300.)
                             .show_percentage(),
                     );
-                    ui.label("Processing media…");
+                    ui.label(if self.jobs.running.iter().any(|(_,op,_)|op=="capture_settings"){"Saving capture options…"}else{"Processing media…"});
                     if ui.button("Cancel").clicked() {
                         for (id, _, _) in &self.jobs.running {
                             self.jobs.cancel(*id);

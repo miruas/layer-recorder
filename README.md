@@ -96,6 +96,8 @@ Preferences live in `${XDG_CONFIG_HOME:-~/.config}/katman/settings.json`. The co
 - [Intel profile](examples/config.intel.json)
 - [JSON schema](examples/settings.schema.json)
 - [Every setting explained](docs/CONFIGURATION.md)
+- [Advanced GSR CLI compatibility](docs/GSR_CLI.md)
+- [Quick export and encoding speed](docs/FAST_EXPORT.md)
 
 ```sh
 layer config show

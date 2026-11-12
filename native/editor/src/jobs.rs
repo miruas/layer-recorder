@@ -25,6 +25,7 @@ pub struct Control {
     cancelled: AtomicBool,
 }
 impl Control {
+    pub(crate) fn standalone()->Arc<Self>{Arc::new(Self{pid:AtomicU32::new(0),cancelled:AtomicBool::new(false)})}
     fn kill_group(&self, signal: i32) {
         let pid = self.pid.load(Ordering::SeqCst);
         if pid > 0 {
@@ -33,7 +34,13 @@ impl Control {
             }
         }
     }
-    fn check(&self) -> anyhow::Result<()> {
+    pub(crate) fn cancel_work(self:&Arc<Self>){
+        self.cancelled.store(true,Ordering::SeqCst);self.kill_group(libc::SIGTERM);
+        let control=self.clone();let pid=self.pid.load(Ordering::SeqCst);
+        if pid>0{thread::spawn(move||{for _ in 0..20{thread::sleep(Duration::from_millis(25));if control.pid.load(Ordering::SeqCst)!=pid{return;}}if control.pid.load(Ordering::SeqCst)==pid{control.kill_group(libc::SIGKILL);}});}
+    }
+    pub(crate) fn set_pid(&self,pid:u32){self.pid.store(pid,Ordering::SeqCst);}
+    pub(crate) fn check(&self) -> anyhow::Result<()> {
         if self.cancelled.load(Ordering::SeqCst) {
             anyhow::bail!("Media operation cancelled.");
         }
@@ -121,6 +128,9 @@ impl Jobs {
                     }
                 }
                 control.check()?;
+                if op=="export"&&request["options"]["fast"]==true{
+                    return crate::fast_export::run(&request,control.clone(),|value|{let _=tx.send(Event::Progress(id,value));});
+                }
                 let python = std::env::var("LAYER_PYTHON").unwrap_or_else(|_| "python3".into());
                 let python_path = std::env::join_paths(std::iter::once(root.clone()).chain(
                     std::env::split_paths(&std::env::var_os("PYTHONPATH").unwrap_or_default()),
@@ -170,6 +180,7 @@ impl Jobs {
                         value["error"].as_str().unwrap_or("Media operation failed")
                     );
                 }
+                if op=="capture_settings"{crate::ipc::save_capture_advanced(&value["data"]["capture_advanced"])?;}
                 Ok(value["data"].clone())
             })();
             control.pid.store(0, Ordering::SeqCst);
@@ -191,8 +202,7 @@ impl Jobs {
     }
     pub fn cancel(&self, id: u64) {
         if let Some((_, _, control)) = self.running.iter().find(|(number, _, _)| *number == id) {
-            control.cancelled.store(true, Ordering::SeqCst);
-            control.kill_group(libc::SIGTERM);
+            control.cancel_work();
         }
     }
     pub fn busy(&self) -> bool {
@@ -215,6 +225,13 @@ mod tests {
     use serde_json::json;
     use std::{fs, time::Instant};
 
+    #[test]
+    fn cancellation_escalates_when_process_group_ignores_term(){
+        let control=Control::standalone();let mut child=Command::new("sh").args(["-c","trap '' TERM; echo ready; sleep 60"]).process_group(0).stdout(Stdio::piped()).spawn().unwrap();
+        let mut ready=String::new();BufReader::new(child.stdout.take().unwrap()).read_line(&mut ready).unwrap();assert_eq!(ready.trim(),"ready");control.set_pid(child.id());
+        let started=Instant::now();control.cancel_work();let (tx,rx)=mpsc::channel();let owner=control.clone();thread::spawn(move||{let mut process=Process{child,control:owner};let status=process.child.wait();let _=tx.send(status);});
+        let result=rx.recv_timeout(Duration::from_secs(2));if result.is_err(){control.kill_group(libc::SIGKILL);}assert!(result.unwrap().unwrap().success()==false);assert!(started.elapsed()>=Duration::from_millis(400));assert!(started.elapsed()<Duration::from_secs(2));
+    }
     #[test]
     fn cancelling_a_blocked_persistence_gate_finishes_without_spawning_python() {
         let directory = tempfile::tempdir().unwrap();

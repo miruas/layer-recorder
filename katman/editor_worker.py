@@ -374,6 +374,9 @@ def _dispatch(payload, progress, cancel):
     if not isinstance(operation, str) or not operation.strip():
         raise ValueError("The request has no operation.")
     name = operation.strip().lower().replace("-", "_")
+    if name == "capture_settings":
+        from .configuration import validate_capture_advanced
+        return {"capture_advanced": validate_capture_advanced(payload.get("capture_advanced"))}
     if name in ("voiceover", "record_voiceover"):
         raise RuntimeError("Voiceover recording is not supported by the headless worker.")
     if name == "waveforms":

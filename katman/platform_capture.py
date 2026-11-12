@@ -254,9 +254,9 @@ def _enrich_geometry(items):
 def displays(program, targets=None, *, include_capture_mode=False):
     process = subprocess.run([program, "--list-monitors"], capture_output=True,
                              text=True, timeout=INVENTORY_TIMEOUT)
-    standalone = lambda target: (target in ("portal", "focused") or
-                                 target.isdecimal() or
-                                 target.startswith("/dev/video"))
+    from .configuration import capture_target_base, static_capture_target, validate_capture_target
+    standalone = static_capture_target
+    for target in targets or []: validate_capture_target(target)
     if process.returncode and (not targets or not all(standalone(target) for target in targets)):
         raise RuntimeError("GSR display discovery failed: " + process.stderr[-1000:])
     result = []
@@ -278,11 +278,12 @@ def displays(program, targets=None, *, include_capture_mode=False):
     if targets:
         selected = []
         for target in targets:
-            item = next((monitor for monitor in result if monitor["name"] == target), None)
+            base=capture_target_base(target)
+            item = next((monitor for monitor in result if monitor["name"] == base), None)
             if item:
-                selected.append(item)
-            elif target == "portal":
-                selected.append(dict(name="portal", label="GSR portal selection",
+                selected.append({**item, "name":target})
+            elif base == "portal":
+                selected.append(dict(name=target, label="GSR portal selection",
                                      x=0, y=0, width=0, height=0,
                                      logical_width=0, logical_height=0,
                                      layout_provider="portal-selected"))

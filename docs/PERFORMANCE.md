@@ -85,6 +85,10 @@ The MP4 measurement encodes the full timeline, including audio. Streaming begins
 
 The measurements demonstrate avoiding an entire-timeline encode before playback. They do not establish a universal speedup for all edits. Solid-color sources compress easily; real screen motion, codecs, storage and scene complexity can change the result substantially.
 
+## Final export
+
+Eligible complete, unchanged single-video clips can bypass video rendering and encoding through the Rust packet-copy worker. Selected audio is mixed separately. Precise cuts and edited/composited scenes retain the accurate renderer, which now avoids proven redundant/static filter work and exposes codec-specific speed controls. See [Quick export](FAST_EXPORT.md) for eligibility, timing limitations and a measured example.
+
 ## Remaining costs
 
 An uncached seek still starts a decoder. Complex scenes and unsupported effects use FFmpeg and can remain expensive. Reverse streaming can buffer a source segment before producing reversed frames. Tracking, stabilization analysis, denoising, transcription, proxy generation and final export retain their processing costs. Neither 60 nor 120 FPS playback is guaranteed for every combination of effects or hardware. Measure the chosen resolution, source codec and effect stack on the target system; no fixed GPU speedup is claimed here.

@@ -2,6 +2,10 @@
 
 ## 0.8.0 (unreleased)
 
+- Add validated advanced GSR capture controls, all source modifiers and exact native CLI passthrough alongside managed independent-source recording.
+- Add native Rust original-video quick export for eligible complete clips, with independent audio mixing and conservative render fallbacks for edits/cuts.
+- Simplify proven redundant export filters and expose codec-specific render speed controls without changing default quality.
+
 - Keep privacy effects, titles and supported libass captions in bounded GPU overlay caches; retain the last complete preview while new glyphs or frames load.
 - Default to Native/source preview quality with configurable 1080p/1440p/4K/custom bounds and 60/120 FPS scheduling; discover missing legacy source rates in the background.
 

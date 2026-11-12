@@ -59,7 +59,16 @@
         "hevc_hdr",
         "av1",
         "av1_10bit",
-        "av1_hdr"
+        "av1_hdr",
+        "vp8",
+        "vp9",
+        "h264_vulkan",
+        "hevc_vulkan",
+        "hevc_hdr_vulkan",
+        "hevc_10bit_vulkan",
+        "av1_vulkan",
+        "av1_hdr_vulkan",
+        "av1_10bit_vulkan"
       ]
     },
     "render_device": {
@@ -168,7 +177,9 @@
       "items": {
         "type": "string",
         "minLength": 1,
-        "maxLength": 256
+        "maxLength": 1024,
+        "pattern": "^[^;\\x00-\\x1f|{}]{1,63}(?:;(?:[xy]=[+-]?[0-9]{1,9}%?|(?:width|height)=\\+?[0-9]{1,9}%?|(?:halign|valign)=(?:start|center|end)|(?:hflip|vflip)=(?:true|false)|pixfmt=(?:auto|yuyv|mjpeg)|camera_(?:fps|width|height)=[0-9]{1,9}))*$",
+        "description": "One independent GSR source with known semicolon modifiers. Modifier keys must be unique; Layer enforces this semantic constraint. Composite pipes and placeholders are excluded."
       },
       "maxItems": 16,
       "uniqueItems": true,
@@ -290,6 +301,535 @@
           ]
         }
       ]
+    },
+    "capture_advanced": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "description": "Advanced GSR producer settings. Layer manages output, segments, replay storage and timestamps. See docs/GSR_CLI.md.",
+      "properties": {
+        "bitrate_mode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "qp",
+            "vbr",
+            "cbr"
+          ]
+        },
+        "framerate_mode": {
+          "type": "string",
+          "enum": [
+            "cfr",
+            "vfr",
+            "content"
+          ]
+        },
+        "pixel_format": {
+          "type": "string",
+          "enum": [
+            "yuv420",
+            "yuv444"
+          ]
+        },
+        "color_range": {
+          "type": "string",
+          "enum": [
+            "limited",
+            "full"
+          ]
+        },
+        "tune": {
+          "type": "string",
+          "enum": [
+            "performance",
+            "quality"
+          ]
+        },
+        "encoder": {
+          "type": "string",
+          "enum": [
+            "gpu",
+            "cpu"
+          ]
+        },
+        "audio_codec": {
+          "type": "string",
+          "enum": [
+            "opus",
+            "aac",
+            "mp3"
+          ]
+        },
+        "cursor": {
+          "type": "boolean"
+        },
+        "fallback_cpu_encoding": {
+          "type": "boolean"
+        },
+        "low_power": {
+          "type": "boolean"
+        },
+        "restore_portal_session": {
+          "type": "boolean"
+        },
+        "overclock": {
+          "type": "boolean"
+        },
+        "verbose": {
+          "type": "boolean"
+        },
+        "gl_debug": {
+          "type": "boolean"
+        },
+        "exclude_metadata": {
+          "type": "boolean"
+        },
+        "keyint": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Seconds; bounded by Layer segment and snapshot timing."
+        },
+        "audio_bitrate": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 50000,
+          "description": "kbps; zero lets GSR choose."
+        },
+        "portal_session_token_filepath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\x00-\\x1f{};]+$"
+        },
+        "plugins": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "allOf": [
+              {
+                "pattern": "^[^\\x00-\\x1f{};]+$"
+              },
+              {
+                "pattern": "^/.*\\.so$"
+              }
+            ]
+          },
+          "description": "Absolute paths to native plugins that GSR executes in each video producer."
+        },
+        "region": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "width",
+            "height",
+            "x",
+            "y"
+          ],
+          "properties": {
+            "width": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 32768
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 32768
+            },
+            "x": {
+              "type": "integer",
+              "minimum": -131072,
+              "maximum": 131072
+            },
+            "y": {
+              "type": "integer",
+              "minimum": -131072,
+              "maximum": 131072
+            }
+          }
+        },
+        "video_options": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "aq-strength": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "b_ref_mode": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "coder": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "cq": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "level": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "look_ahead": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "preset": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "profile": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "qp": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "rc_mode": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "spatial_aq": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "temporal_aq": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            }
+          },
+          "description": "Restricted codec-private option map. Encoder support varies; muxer/timeline options are excluded."
+        },
+        "audio_options": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "aac_coder": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "aac_pce": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "application": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "compression_level": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "cutoff": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "frame_duration": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "vbr": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.+:/-]{1,128}$"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            }
+          },
+          "description": "Restricted codec-private option map. Encoder support varies; muxer/timeline options are excluded."
+        }
+      }
     }
-  }
+  },
+  "description": "Layer settings. Python validate_config is authoritative for replay_short <= replay_long <= buffer, unique shortcut/modifier keys, and strict integer types. JSON Schema integer semantics also admit integral JSON numbers such as 1.0.",
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "capture_advanced"
+        ],
+        "properties": {
+          "capture_advanced": {
+            "required": [
+              "encoder"
+            ],
+            "properties": {
+              "encoder": {
+                "const": "cpu"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "capture_codec": {
+            "enum": [
+              "auto",
+              "h264"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "capture_advanced"
+        ],
+        "properties": {
+          "capture_advanced": {
+            "required": [
+              "bitrate_mode"
+            ],
+            "properties": {
+              "bitrate_mode": {
+                "const": "cbr"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "capture_quality": {
+            "const": "custom"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "capture_advanced"
+        ],
+        "properties": {
+          "capture_advanced": {
+            "required": [
+              "bitrate_mode"
+            ],
+            "properties": {
+              "bitrate_mode": {
+                "enum": [
+                  "auto",
+                  "qp",
+                  "vbr"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "capture_quality"
+        ],
+        "properties": {
+          "capture_quality": {
+            "enum": [
+              "medium",
+              "high",
+              "very_high",
+              "ultra"
+            ]
+          }
+        }
+      }
+    }
+  ]
 }
