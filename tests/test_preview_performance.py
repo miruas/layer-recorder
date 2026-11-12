@@ -72,6 +72,16 @@ class PreviewStream(unittest.TestCase):
             pixel=frame[(30*250+30)*3:(30*250+30)*3+3]
             self.assertGreater(pixel[2 if i==0 else 0],180)
 
+    def test_scene_without_audio_does_not_launch_silent_sink(self):
+        payload=self.request(window=.1);payload['audio']=True
+        payload['model']['tracks']=[track for track in payload['model']['tracks'] if track['kind']=='video']
+        player=self.root/'paplay';marker=self.root/'unneeded-audio'
+        player.write_text('#!'+sys.executable+'\nfrom pathlib import Path\nPath('+repr(str(marker))+').touch()\n')
+        player.chmod(0o755)
+        with patch.dict(os.environ,PATH=str(self.root)+os.pathsep+os.environ['PATH']):
+            output=io.BytesIO();stream(payload,output)
+        self.assertGreater(len(output.getvalue()),0);self.assertFalse(marker.exists())
+
     def test_audio_is_real_pcm_from_same_timeline(self):
         payload=self.request(window=.25);payload['audio']=True
         player=self.root/'paplay';capture=self.root/'pcm.raw'

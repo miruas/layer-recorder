@@ -15,7 +15,7 @@ import tempfile
 import threading
 from pathlib import Path
 from .editor_worker import _load, _model
-from .studio_model import duration, validate
+from .studio_model import duration, clip_duration, validate
 from .studio_render import compile_graph, number
 from .studio_jobs import preview_options
 
@@ -44,8 +44,9 @@ def stream(payload, output=None):
         end=min(end,position+window)
     if position>=end:return
     # Accurate effects always use the same graph as export, at playback size.
-    audio=payload.get('audio',True) and shutil.which('paplay') is not None
-    if payload.get('audio',True) and not audio:print('Preview audio unavailable: paplay is not installed.',file=sys.stderr)
+    needs_audio=payload.get('audio',True) and any(track.get('kind')=='audio' and not track.get('mute') and any(not clip.get('mute') and clip.get('start',0)<end and clip.get('start',0)+clip_duration(clip)>position for clip in track.get('clips',[])) for track in model.get('tracks',[]))
+    audio=needs_audio and shutil.which('paplay') is not None
+    if needs_audio and not audio:print('Preview audio unavailable: paplay is not installed.',file=sys.stderr)
     process=player=None;read_fd=write_fd=None;audio_thread=None
     ready=threading.Event();closed=threading.Event();audio_errors=[];player_lock=threading.Lock()
     with tempfile.TemporaryDirectory(prefix='layer-preview-stream-') as directory:
