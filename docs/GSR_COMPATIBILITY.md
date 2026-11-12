@@ -15,7 +15,7 @@ This describes the Layer 0.8 source against the pinned **GSR 6.1.7** fork, upstr
 | Native multi-source composition | Layer preserves independent producers and composes afterward. | Flattened native GSR composition is not a Layer capture mode. |
 | Monitor layout | Optional Hyprland, Sway and X11/XRandR adapters enrich GSR-matching outputs. | Other sessions use an explicit synthetic horizontal layout. Layout enrichment never determines whether GSR can capture an output. |
 | Virtual outputs | Available only through a GSR-supported direct inventory or explicit portal source. | No wf-recorder fallback. |
-| Display hotplug | Inventory at capture start. | Automatic video-source hotplug is not implemented. |
+| Display hotplug | The Rust session polls GSR inventory every two seconds, adding/retiring display generations and reacting to geometry/mode changes. | Past segments remain available; probe failures do not retire sources. Explicit portal/window/camera selections stay static and never trigger periodic permission prompts. |
 | Arbitrary capture GPU selection | GSR selects the capture/display GPU; profiles validate it. | Cross-GPU capture/encode selection is not promised. Export-device selection is a separate operation. |
 
 The upstream [manual](../upstream/gpu-screen-recorder/gpu-screen-recorder.1) remains authoritative for source and driver restrictions. Advanced capture targets are configured in Layer's JSON settings; the normal GSR source/region selection does not restrict Layer's independent-display capture.
@@ -47,8 +47,10 @@ The fork adds exact `app:layer-node:<PipeWire-id>` selectors, first-packet times
 | Audio-only replay | GSR audio-only producers feed Layer's ring. This does not add upstream native `-r` support for audio-only capture. |
 | Configurable saves | Buffer and short/long save durations follow the shared GSR preferences. Defaults are 300/60/300 seconds; CLI names `save-1`/`save-5` remain compatibility names. |
 | Original Alt+Z and GSR shortcuts | The patched GSR UI retains normal keys and mirrors record/replay/save actions to Layer. Its normal shortcut settings also expose opening Layer. |
-| Pause / native GSR socket | Layer supervises producers and exposes its own JSON socket. Capture pause and direct reuse of the native GSR IPC/buffer are not implemented. |
-| Streaming / WHIP, screenshots, region capture | Not exposed as Layer capture actions. Edited-frame PNG and editor crop are separate. |
+| Pause / native GSR socket | GSR pause/resume is mirrored into the ordinary Layer recording timeline. Replay continues independently. Repeated pause callbacks are idempotent. | Layer originals remain non-destructive, including paused intervals; the recording timeline and exports exclude those intervals. This is not a privacy/purge action. GSR itself owns native pause and its output file. |
+| Streaming / WHIP | The Capture menu and `layer gsr` dispatch the normal GSR streaming commands using its existing configuration. | GSR owns the broadcast; the Layer edited composition is not a streaming mixer. No stream key is copied into Layer settings. |
+| Region capture | Capture menu forwards GSR region recording and region screenshot actions. | GSR owns the selection and cropped output. Independent Layer sources stay full-screen for later editing/cropping. |
+| Screenshots | Full-screen, region and window screenshot actions use GSR. | Images are saved to the normal GSR screenshot destination, not as editable Layer recording projects. Edited-frame PNG remains a separate editor action. |
 
 ## Desktop boundary and validation
 

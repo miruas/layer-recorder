@@ -83,3 +83,13 @@ unknown compiled inputs block source packaging. Release archives must be rebuilt
 from the clean commit used by the matching binary.
 
 Additional Rust regressions exercise blocked FIFO autosave, 1,000 coalesced submissions with one retained pending model per document, retained failed snapshots, imported-source metadata barriers and cancellation before a gated media process starts.
+
+## GSR integration and hotplug checks
+
+The integration candidate completed 191 Python tests (three opt-in hardware skips), 35 editor Rust tests and 24 recorder Rust tests.
+
+The GSR control dispatcher is tested with an executable local RPC fixture; it checks the actual argument list, errors, unavailable-overlay behavior, scope notes and every action used by the editor. Dispatch acknowledgement is deliberately separate from completed capture.
+
+The real Rust daemon is exercised with synthetic FFmpeg producers: pause/resume with continuous RAM replay, export of paused recordings, resume after an insufficient unpaused duration, independent ordinary-record lifecycle inside GSR replay/streaming, and unrelated standalone recording ownership. Mutable GSR inventories exercise monitor addition, removal, mode changes and replug without deleting earlier media. A slow inventory query verifies that stop remains responsive. Pure reconciliation tests cover probe failures, retry backoff, static consent-based sources and strict inventory parsing. Optional geometry failure retains the last known placement when GSR's physical mode is unchanged.
+
+The native editor was also checked in Debian 13 Xfce/X11 and nested Weston Wayland, and openSUSE Leap 16 Xfce/X11 and nested KWin Wayland, at 1440, 950 and 800 pixel widths, with normal/slow-font/blocked-project startup checks. These are software-rendered VM checks; they do not certify physical cable hotplug or an authenticated broadcast account.

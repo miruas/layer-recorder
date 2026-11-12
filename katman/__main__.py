@@ -43,7 +43,7 @@ def ensure_daemon():
 def main():
     parser = argparse.ArgumentParser(prog="layer",description="Layer multi-source recorder and editor")
     parser.add_argument("command", nargs="?", default="ui",
-                        choices=["ui", "download-model", "overlay", "autostart", "status", "record", "replay", "save-1", "save-5", "shutdown", "export", "bridge", "app-name", "doctor", "config"])
+                        choices=["ui", "download-model", "overlay", "autostart", "status", "record", "replay", "save-1", "save-5", "shutdown", "export", "bridge", "app-name", "doctor", "config", "gsr"])
     parser.add_argument("path", nargs="?")
     parser.add_argument("--output")
     parser.add_argument("--profile",choices=["auto","nvidia","amd","intel"],default="auto")
@@ -88,6 +88,21 @@ def main():
     if args.command == "ui":
         from .ui import main as ui_main
         ui_main(args.path)
+        return
+    if args.command == "gsr":
+        from .gsr_control import ACTIONS, run as gsr_run
+        if not args.path:
+            parser.error("gsr requires an action: " + ", ".join(sorted([*ACTIONS, "status"])))
+        try:
+            result = gsr_run(args.path)
+        except ValueError as error:
+            parser.error(str(error))
+        except (OSError, RuntimeError) as error:
+            print("GPU Screen Recorder: " + str(error), file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if args.path.strip() == "status" and result.get("process") != "running":
+            sys.exit(1)
         return
     try:
         if args.command == "bridge":

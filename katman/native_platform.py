@@ -20,7 +20,7 @@ def main():
                     cfg=settings('record' if op=='plan-record' else 'replay');program=gsr_program(cfg);info=gsr_info(program)
                     if info.get('layer_audio_node_selector')!='yes':raise RuntimeError('This capture engine needs the Layer GSR fork with independent audio-node support. Rebuild gpu-screen-recorder with tools/build-native.py.')
                     if info.get('layer_segment_muxer')=='no':raise RuntimeError('The GSR build lacks the FFmpeg segment muxer required for Layer replay. Rebuild the complete Layer package.')
-                    items=displays(program,cfg['capture_targets']);direct={m['name'] for m in items}
+                    items=displays(program,cfg['capture_targets'],include_capture_mode=True);direct={m['name'] for m in items}
                     plans=[]
                     for item in items:
                         command,backend=capture_command(item,cfg,direct,info,None)
@@ -29,6 +29,11 @@ def main():
                     audio=audio_plan(program,info)
                     plans.extend(audio['tracks'])
                     data={'config':cfg,'program':program,'capabilities':info,'tracks':plans,'audio_mode':audio['mode'],'warnings':audio['warnings']}
+                elif op=='video-plan':
+                    from .display_inventory import display_inventory
+                    cfg=request.get('config')
+                    if cfg is None:cfg=settings()
+                    data=display_inventory(APP,cfg)
                 elif op=='identity':data={'application':focused_application(),'shortcut_error':watcher.error if watcher else '', 'integrations':desktop_integrations()}
                 else:raise ValueError('Unknown platform operation.')
                 reply={'ok':True,'data':data}

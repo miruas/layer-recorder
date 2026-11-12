@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! One native archive/editor window. Media work is lazy and never blocks event handling.
+#[path = "gsr_controls.rs"]
+mod gsr_controls;
+use gsr_controls::{Action as GsrAction, Snapshot as CaptureState};
 use crate::{
     ipc,
     jobs::{Event, Jobs},
@@ -30,7 +33,7 @@ struct Recording {
 enum Message {
     Font(Vec<u8>),
     Opened(u64, Result<Document, String>),
-    GsrOpened(Result<(), String>),
+    Gsr(GsrAction, Result<Value, String>),
     ScreenshotSaved(Result<PathBuf, String>),
     Library(Vec<Recording>),
     Capture(bool, Result<Value, String>),
@@ -45,6 +48,11 @@ struct Studio {
     settings_polling: bool,
     settings_revision:u64,
     last_settings_poll: Instant,
+    gsr_running: Option<bool>,
+    gsr_polling: bool,
+    gsr_busy: bool,
+    last_gsr_poll: Instant,
+    library_refresh_due: Option<Instant>,
     instance: ipc::Instance,
     tx: mpsc::Sender<Message>,
     rx: mpsc::Receiver<Message>,
@@ -190,6 +198,11 @@ impl Studio {
             settings_polling: false,
             settings_revision:0,
             last_settings_poll: Instant::now(),
+            gsr_running: None,
+            gsr_polling: false,
+            gsr_busy: false,
+            last_gsr_poll: Instant::now(),
+            library_refresh_due: None,
             instance,
             tx,
             rx,
@@ -342,7 +355,7 @@ impl Studio {
                                 path,
                                 name: p["name"].as_str().unwrap_or("Recording").into(),
                                 created: p["created"].as_str().unwrap_or("").replace('T', " "),
-                                duration: number(&p, "duration", 0.),
+                                duration: number(&p, "recorded_duration", number(&p, "duration", 0.)),
                                 video: sources
                                     .map(|v| v.iter().filter(|s| s["type"] == "video").count())
                                     .unwrap_or(0),
@@ -397,6 +410,32 @@ impl Studio {
             }
             Err(e) => self.error = format!("Could not open this recording: {e:#}"),
         }
+    }
+    fn gsr(&mut self, action: GsrAction) {
+        if self.gsr_busy { return; }
+        self.gsr_busy = true;
+        let root = self.root.clone();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = if action == GsrAction::GsrSettings {
+                ipc::open_gsr(&root).map(|_| json!({"ok":true}))
+            } else {
+                ipc::gsr_action(&root, action.command())
+            }
+            .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Message::Gsr(action, result));
+        });
+    }
+    fn poll_gsr(&mut self) {
+        if self.gsr_polling { return; }
+        self.gsr_polling = true;
+        self.last_gsr_poll = Instant::now();
+        let root = self.root.clone();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let result = ipc::gsr_action(&root, GsrAction::Status.command()).map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Message::Gsr(GsrAction::Status, result));
+        });
     }
     fn capture(&mut self, action: &str, seconds: Option<u64>) {
         let root = self.root.clone();
@@ -585,9 +624,25 @@ impl Studio {
                 Message::Opened(generation, result) => {
                     if generation == self.open_generation { self.opened(result); }
                 }
-                Message::GsrOpened(result) => {
-                    self.refresh_settings();
-                    if let Err(error) = result { self.error = error; }
+                Message::Gsr(action, result) => {
+                    if action == GsrAction::Status {
+                        self.gsr_polling = false;
+                        self.gsr_running = Some(result.is_ok());
+                    } else {
+                        self.gsr_busy = false;
+                        match result {
+                            Ok(_) => {
+                                self.gsr_running = Some(true);
+                                self.last_gsr_poll = Instant::now() - Duration::from_secs(10);
+                                if action.is_replay_save() {
+                                    // GSR writes the replay after acknowledging the request.
+                                    // Refresh the archive after that asynchronous save settles.
+                                    self.library_refresh_due = Some(Instant::now() + Duration::from_millis(1800));
+                                }
+                            }
+                            Err(error) => self.error = error,
+                        }
+                    }
                 }
                 Message::ScreenshotSaved(result) => {
                     match result {
@@ -831,89 +886,85 @@ impl Studio {
             self.queue_frame();
         }
         if self.last_settings_poll.elapsed() > Duration::from_secs(5) && !self.settings_polling { self.refresh_settings(); }
+        if self.last_gsr_poll.elapsed() > Duration::from_secs(10) && !self.gsr_polling { self.poll_gsr(); }
+        if self.library_refresh_due.is_some_and(|due| Instant::now() >= due) {
+            self.library_refresh_due = None;
+            self.scan();
+            self.last_poll = Instant::now() - Duration::from_secs(2);
+        }
         if self.last_poll.elapsed() > Duration::from_millis(800) && !self.polling {
             self.capture("status", None);
             self.last_poll = Instant::now();
         }
     }
     fn toolbar(&mut self, ctx: &egui::Context) {
+        let compact = ctx.viewport_rect().width() < 1250.;
+        let narrow = ctx.viewport_rect().width() < 900.;
+        let state = CaptureState::from_status(&self.status);
+        let mut action = None;
+        let mut preferences = false;
         egui::TopBottomPanel::top("recording")
             .exact_height(68.)
             .show(ctx, |ui| {
                 ui.add_space(8.);
                 ui.horizontal(|ui| {
                     ui.add_space(10.);
-                    ui.label(RichText::new("Layer").size(23.).strong());
-                    ui.add_space(24.);
-                    let recording = self.status["recording"] == true;
-                    let replay = self.status["replay"] == true;
-                    if button(
-                        ui,
-                        if recording {
-                            "Stop recording"
-                        } else {
-                            "Record"
-                        },
-                        recording,
-                    )
-                    .clicked()
-                    {
-                        self.capture("toggle-record", None);
-                    }
-                    if button(
-                        ui,
-                        if replay { "Replay on" } else { "Enable replay" },
-                        false,
-                    )
-                    .clicked()
-                    {
-                        self.capture("toggle-replay", None);
-                    }
-                    for (key, label) in
-                        [("replay_short", "Save short"), ("replay_long", "Save long")]
-                    {
-                        let seconds = self.cfg[key].as_u64().unwrap_or(60);
-                        let text = format!(
-                            "{} · {}",
-                            label,
-                            if seconds % 60 == 0 {
-                                format!("{} min", seconds / 60)
-                            } else {
-                                format!("{seconds} s")
-                            }
+                    ui.label(RichText::new(if compact {"Layer editor"} else {"GPU Screen Recorder"}).size(if compact {18.}else{16.}).strong());
+                    if !compact {
+                        ui.label(
+                            RichText::new("Layer editor")
+                                .small()
+                                .color(ui.visuals().weak_text_color()),
+                        )
+                        .on_hover_text(
+                            "GPU Screen Recorder captures. Layer archives and edits the saved recordings.",
                         );
+                    }
+                    ui.add_space(10.);
+                    ui.separator();
+                    let capture_enabled = !self.gsr_busy;
+                    ui.add_enabled_ui(capture_enabled, |ui| {
+                        if let Some(chosen) = gsr_controls::controls(ui, &state, [self.cfg["replay_short"].as_u64().unwrap_or(60),self.cfg["replay_long"].as_u64().unwrap_or(300)]) {
+                            action = Some(chosen);
+                        }
+                        if let Some(chosen) = gsr_controls::capture_menu(ui) {
+                            action = Some(chosen);
+                        }
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .add_enabled(
-                                replay,
-                                egui::Button::new(text).min_size(Vec2::new(0., 32.)),
-                            )
+                            .button("Preferences")
+                            .on_hover_text("Library location and Layer preferences.")
                             .clicked()
                         {
-                            self.capture("save-replay", Some(seconds));
+                            preferences = true;
                         }
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if button(ui, "Recording settings", false).clicked() {
-                            self.settings_open = !self.settings_open;
+                        if !narrow {
+                            ui.label(
+                                RichText::new(state.summary(compact))
+                                    .small()
+                                    .color(state.tone(ui)),
+                            );
+                            if self.gsr_running == Some(false) {
+                                ui.label(
+                                    RichText::new("GSR not running")
+                                        .small()
+                                        .color(ui.visuals().weak_text_color()),
+                                )
+                                .on_hover_text(
+                                    "GPU Screen Recorder is not reachable. Capture controls show an error until it is running.",
+                                );
+                            }
                         }
-                        ui.label(
-                            RichText::new(if recording {
-                                "Recording"
-                            } else if replay {
-                                "Replay in RAM"
-                            } else {
-                                "Ready"
-                            })
-                            .small()
-                            .color(if recording {
-                                Color32::from_rgb(241, 137, 129)
-                            } else {
-                                Color32::from_rgb(165, 186, 187)
-                            }),
-                        );
                     });
                 });
             });
+        if preferences {
+            self.settings_open = !self.settings_open;
+        }
+        if let Some(chosen) = action {
+            self.gsr(chosen);
+        }
     }
     fn archive(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("library")
@@ -1479,8 +1530,59 @@ impl Studio {
     fn dialogs(&mut self, ctx: &egui::Context) {
         if self.settings_open {
             let mut open = true;
-            egui::Window::new("Recording preferences").open(&mut open).default_width(560.).resizable(false).show(ctx,|ui|{ui.label("GPU Screen Recorder owns recording formats, replay durations and shared shortcuts.");if button(ui,"Open GPU Screen Recorder settings",true).clicked(){let root=self.root.clone();let tx=self.tx.clone();thread::spawn(move||{let _=tx.send(Message::GsrOpened(ipc::open_gsr(&root).map_err(|e|e.to_string())));});}ui.add_space(14.);ui.separator();ui.label(RichText::new("Recording library").strong());ui.add(egui::TextEdit::singleline(&mut self.library_edit).desired_width(f32::INFINITY));if ui.button("Save library location").clicked(){let library=self.library_edit.clone();let tx=self.tx.clone();thread::spawn(move||{let result=ipc::save_library(&library).map_err(|e|e.to_string());let _=tx.send(Message::LibrarySaved(library,result));});}ui.add_space(8.);ui.label(RichText::new("Displays and application sounds are kept as independent sources. Choose what remains while editing.").small().color(Color32::from_gray(185)));});
+            let mut gsr_action = None;
+            egui::Window::new("Preferences")
+                .open(&mut open)
+                .default_width(560.)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(
+                        "GPU Screen Recorder owns capture: formats, replay durations, streaming, screenshots and shared shortcuts. Layer archives and edits the saved recordings.",
+                    );
+                    ui.add_space(10.);
+                    ui.horizontal(|ui| {
+                        if button(ui, "Open GSR", false)
+                            .on_hover_text("Show or hide the GPU Screen Recorder overlay.")
+                            .clicked()
+                        {
+                            gsr_action = Some(GsrAction::OpenGsr);
+                        }
+                        if button(ui, "GSR settings", true)
+                            .on_hover_text("Open GPU Screen Recorder's recording settings.")
+                            .clicked()
+                        {
+                            gsr_action = Some(GsrAction::GsrSettings);
+                        }
+                    });
+                    ui.add_space(14.);
+                    ui.separator();
+                    ui.label(RichText::new("Recording library").strong());
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.library_edit)
+                            .desired_width(f32::INFINITY),
+                    );
+                    if ui.button("Save library location").clicked() {
+                        let library = self.library_edit.clone();
+                        let tx = self.tx.clone();
+                        thread::spawn(move || {
+                            let result = ipc::save_library(&library).map_err(|e| e.to_string());
+                            let _ = tx.send(Message::LibrarySaved(library, result));
+                        });
+                    }
+                    ui.add_space(8.);
+                    gsr_controls::hint(ui);
+                    ui.label(
+                        RichText::new(
+                            "Displays and application sounds are kept as independent sources. Choose what remains while editing.",
+                        )
+                        .small()
+                        .color(Color32::from_gray(185)),
+                    );
+                });
             self.settings_open = open;
+            if let Some(chosen) = gsr_action {
+                self.gsr(chosen);
+            }
         }
         if self.export_open {
             let mut open = true;
@@ -1694,8 +1796,10 @@ impl eframe::App for Studio {
                     ui.add_space(ui.available_height() * 0.3);
                     ui.heading(if self.opening { "Opening recording…" } else { "Your recordings, ready to edit" });
                     ui.add_space(10.);
-                    ui.label("Select a recording from the library or save a replay to begin.");
-                    ui.label("Screens and sounds stay independent until you export.");
+                    ui.label("Capture with GPU Screen Recorder. Edit and archive in Layer.");
+                    ui.label("Select a recording from the library, or use Capture to save a replay.");
+                    ui.add_space(6.);
+                    gsr_controls::hint(ui);
                     ui.add_space(16.);
                     if button(ui, "Open recording…", true).clicked() {
                         self.choose("open", false);

@@ -67,4 +67,4 @@ class Preferences(unittest.TestCase):
         from katman import bridge
         cfg=profile('auto');cfg.update(buffer=600,replay_short=30,replay_long=180)
         with patch('katman.__main__.ensure_daemon'),patch('katman.bridge.settings',return_value=cfg),patch('katman.bridge.request',return_value={}) as request:
-            bridge.mirror('save-1');request.assert_called_with('save-replay',seconds=30);bridge.mirror('save-5');request.assert_called_with('save-replay',seconds=180)
+            bridge.mirror('save-1');request.assert_called_with('gsr-action',command='save-1',seconds=30);bridge.mirror('save-5');request.assert_called_with('gsr-action',command='save-5',seconds=180)

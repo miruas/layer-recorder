@@ -23,6 +23,9 @@ See [GPU support and driver setup](docs/GPU_SUPPORT.md) for profiles, limitation
 ## Features
 
 - Independent display, microphone and application-audio capture, including sources that appear after recording starts.
+- GSR-owned capture controls: live broadcast, region recording and full-screen/region/window screenshots use the normal GSR settings and output destinations. The overlay has a single Recordings entry for the native editor.
+- Dynamic display hotplug keeps previous source generations and reconciles reconnects or resolution changes without resetting the RAM ring.
+- Ordinary-recording pause/resume is mirrored into the editable timeline while replay remains continuous; source media stays non-destructive.
 - Configurable **RAM replay ring**, with separate short/long save presets (60 and 300 seconds by default). Normal recording and replay can run together.
 - Time-window source filtering: retired or genuinely silent application streams are omitted from new saves; microphone tracks remain available.
 - Readable audio roles such as **Discord — Voice chat**, **Discord — Media** and **Notifications**, when exposed separately by PipeWire.

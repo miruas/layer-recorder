@@ -42,7 +42,7 @@ index fa250b1..5a11f36 100644
          ConfigHotkey start_stop_hotkey;
          ConfigHotkey save_hotkey;
 diff --git a/include/Overlay.hpp b/include/Overlay.hpp
-index 57c20be..53cd6d5 100644
+index 57c20be..0d7fc89 100644
 --- a/include/Overlay.hpp
 +++ b/include/Overlay.hpp
 @@ -1,3 +1,4 @@
@@ -50,11 +50,20 @@ index 57c20be..53cd6d5 100644
  #pragma once
  
  #include "gui/PageStack.hpp"
-@@ -309,7 +310,7 @@ namespace gsr {
+@@ -171,6 +172,7 @@ namespace gsr {
+         void update_gsr_game_tracker_replay_status();
+ 
+         void on_stop_recording(int exit_code, std::string &video_filepath);
++        void mirror_layer_recording(bool recording);
+ 
+         void update_ui_recording_paused();
+         void update_ui_recording_unpaused();
+@@ -309,7 +311,8 @@ namespace gsr {
          bool replay_launched_manually = false;
          bool replay_launched_once = false;
          bool replay_recording = false;
 -        int replay_save_duration_min = 0;
++        bool layer_recording_mirrored = false;
 +        int replay_save_duration_sec = 0;
          mgl::Clock replay_duration_clock;
          double replay_saved_duration_sec = 0.0;
@@ -278,7 +287,7 @@ index 217f0fc..9476cc7 100644
              } else {
                  const char *args[] = { "gsr-global-hotkeys", "--set-led", "Scroll Lock", enabled ? "on" : "off", nullptr };
 diff --git a/src/Overlay.cpp b/src/Overlay.cpp
-index 921bdd3..8933c94 100644
+index 921bdd3..d1308ec 100644
 --- a/src/Overlay.cpp
 +++ b/src/Overlay.cpp
 @@ -1,3 +1,4 @@
@@ -434,18 +443,14 @@ index 921bdd3..8933c94 100644
              button->add_item(TR("Settings"), "settings");
              button->set_item_icon("start", &get_theme().play_texture);
              button->set_item_icon("save", &get_theme().save_texture);
-@@ -1571,6 +1677,22 @@ namespace gsr {
+@@ -1571,6 +1677,18 @@ namespace gsr {
              main_buttons_list->add_widget(std::move(button));
          }
  
 +        {
-+            auto button = std::make_unique<DropdownButton>(get_theme().title_font_desc.c_str(), get_theme().body_font_desc.c_str(), "Layer", "Recording workspace", &get_theme().record_button_texture,
++            auto button = std::make_unique<DropdownButton>(get_theme().title_font_desc.c_str(), get_theme().body_font_desc.c_str(), "Recordings", "Edit with Layer", &get_theme().record_button_texture,
 +                mgl::vec2f(button_width, button_height));
-+            button->add_item("Open library", "ui");
-+            button->add_item("Start / stop recording", "record");
-+            button->add_item("Replay on / off", "replay");
-+            button->add_item("Save short replay", "save-1");
-+            button->add_item("Save long replay", "save-5");
++            button->add_item("Open recordings", "ui", config.main_config.layer_editor_hotkey.to_string(false, false));
 +            button->on_click = [this](const std::string &id) {
 +                const char *katman_args[] = {"layer", id.c_str(), nullptr};
 +                hide();
@@ -457,7 +462,7 @@ index 921bdd3..8933c94 100644
          const mgl::vec2f main_buttons_list_size = main_buttons_list->get_size();
          main_buttons_list->set_position((mgl::vec2f(window_size.x * 0.5f, window_size.y * 0.25f) - main_buttons_list_size * 0.5f).floor());
          front_page_ptr->add_widget(std::move(main_buttons_list));
-@@ -1708,7 +1830,7 @@ namespace gsr {
+@@ -1708,7 +1826,7 @@ namespace gsr {
  
              if(exit_status == 67) {
                  const bool is_flatpak = getenv("FLATPAK_ID") != nullptr;
@@ -466,7 +471,7 @@ index 921bdd3..8933c94 100644
                  show_notification(
                      TRF("To enable autorun: install and configure 'dex' (recommended), or manually add '%s' to your desktop autostart entries.", startup_command).c_str(),
                      10.0,
-@@ -2227,8 +2349,10 @@ namespace gsr {
+@@ -2227,8 +2345,10 @@ namespace gsr {
      void Overlay::reload_config() {
          const SupportedCaptureOptions capture_options = get_supported_capture_options(gsr_info);
          std::optional<Config> new_config = read_config(capture_options);
@@ -478,7 +483,7 @@ index 921bdd3..8933c94 100644
      }
  
      void Overlay::unbind_all_keyboard_hotkeys() {
-@@ -2372,8 +2496,8 @@ namespace gsr {
+@@ -2372,8 +2492,8 @@ namespace gsr {
          double replay_duration_sec = replay_saved_duration_sec;
          if(replay_duration_sec > current_recording_config.replay_config.replay_time)
              replay_duration_sec = current_recording_config.replay_config.replay_time;
@@ -489,7 +494,7 @@ index 921bdd3..8933c94 100644
          return replay_duration_sec;
      }
  
-@@ -2390,7 +2514,9 @@ namespace gsr {
+@@ -2390,7 +2510,9 @@ namespace gsr {
      // This is checked by gsr-game-tracker on the host, since the process ids are host process ids
      static bool is_game_process_tree_pid(pid_t pid) {
          const std::string pid_str = std::to_string(pid);
@@ -500,7 +505,7 @@ index 921bdd3..8933c94 100644
          std::string output;
          return exec_program_on_host_get_stdout(args, output) == 0;
      }
-@@ -2503,9 +2629,17 @@ namespace gsr {
+@@ -2503,9 +2625,17 @@ namespace gsr {
              return false;
  
          const FocusedWindow focused_window = desktop_environment->get_focused_window();
@@ -521,32 +526,96 @@ index 921bdd3..8933c94 100644
  
          rename_file_to_game_name(filepath, file_game_name);
  
-@@ -2682,7 +2816,7 @@ namespace gsr {
+@@ -2682,7 +2812,8 @@ namespace gsr {
              case RecordingStatus::NONE:
                  break;
              case RecordingStatus::REPLAY: {
 -                replay_save_duration_min = 0;
 +                replay_save_duration_sec = 0;
++                mirror_layer_recording(false);
                  update_ui_replay_stopped();
                  if(exit_code == 0) {
                      if(config.replay_config.record_options.show_notifications)
-@@ -2887,6 +3021,7 @@ namespace gsr {
+@@ -2705,6 +2836,7 @@ namespace gsr {
+                 break;
+             }
+             case RecordingStatus::STREAM: {
++                mirror_layer_recording(false);
+                 update_ui_streaming_stopped();
+                 if(exit_code == 0) {
+                     if(config.streaming_config.record_options.show_notifications)
+@@ -2836,10 +2968,35 @@ namespace gsr {
+         game_replay_action = GameReplayAction::IDLE;
      }
  
-     void Overlay::update_ui_recording_started() {
-+        mirror_layer_action("record-on");
++    void Overlay::mirror_layer_recording(bool recording) {
++        if(recording == layer_recording_mirrored)
++            return;
++        layer_recording_mirrored = recording;
++        if(!recording) {
++            mirror_layer_action("record-off");
++            return;
++        }
++        switch(recording_status) {
++            case RecordingStatus::RECORD:
++                mirror_layer_action("record-on");
++                break;
++            case RecordingStatus::REPLAY:
++                mirror_layer_action("record-on-replay");
++                break;
++            case RecordingStatus::STREAM:
++                mirror_layer_action("record-on-stream");
++                break;
++            case RecordingStatus::NONE:
++                break;
++        }
++    }
++
+     void Overlay::on_stop_recording(int exit_code, std::string &video_filepath) {
+-        if(recording_status != RecordingStatus::RECORD && recording_status != RecordingStatus::REPLAY)
++        if(recording_status != RecordingStatus::RECORD && recording_status != RecordingStatus::REPLAY && recording_status != RecordingStatus::STREAM)
+             return;
+ 
++        mirror_layer_recording(false);
++
+         if(exit_code == 0) {
+             const bool saved_in_game_folder = organize_captured_file(video_filepath, config.record_config.organize_into_folders, config.record_config.name_after_captured_application, NotificationType::RECORD);
+             if(!saved_in_game_folder && config.record_config.record_options.show_notifications) {
+@@ -2869,6 +3026,8 @@ namespace gsr {
+     }
+ 
+     void Overlay::update_ui_recording_paused() {
++        if(recording_status == RecordingStatus::RECORD)
++            mirror_layer_action("pause-on");
+         if(!visible || recording_status != RecordingStatus::RECORD)
+             return;
+ 
+@@ -2878,6 +3037,8 @@ namespace gsr {
+     }
+ 
+     void Overlay::update_ui_recording_unpaused() {
++        if(recording_status == RecordingStatus::RECORD)
++            mirror_layer_action("pause-off");
+         if(!visible || recording_status != RecordingStatus::RECORD)
+             return;
+ 
+@@ -2914,6 +3075,7 @@ namespace gsr {
+     }
+ 
+     void Overlay::update_ui_streaming_started() {
++        mirror_layer_action("stream-on");
          if(!visible)
              return;
  
-@@ -2898,6 +3033,7 @@ namespace gsr {
+@@ -2924,6 +3086,7 @@ namespace gsr {
      }
  
-     void Overlay::update_ui_recording_stopped() {
-+        mirror_layer_action("record-off");
+     void Overlay::update_ui_streaming_stopped() {
++        mirror_layer_action("stream-off");
          if(!visible)
              return;
  
-@@ -2935,6 +3071,7 @@ namespace gsr {
+@@ -2935,6 +3098,7 @@ namespace gsr {
      }
  
      void Overlay::update_ui_replay_started() {
@@ -554,7 +623,7 @@ index 921bdd3..8933c94 100644
          if(!visible)
              return;
  
-@@ -2943,11 +3080,14 @@ namespace gsr {
+@@ -2943,11 +3107,14 @@ namespace gsr {
          replay_dropdown_button_ptr->set_description(TR("On"));
          replay_dropdown_button_ptr->set_item_icon("start", &get_theme().stop_texture);
          replay_dropdown_button_ptr->set_item_enabled("save", true);
@@ -571,7 +640,7 @@ index 921bdd3..8933c94 100644
          if(!visible)
              return;
  
-@@ -3162,13 +3302,14 @@ namespace gsr {
+@@ -3162,13 +3329,14 @@ namespace gsr {
          if(recording_status != RecordingStatus::REPLAY || gpu_screen_recorder_process <= 0)
              return;
  
@@ -587,7 +656,7 @@ index 921bdd3..8933c94 100644
          kill(gpu_screen_recorder_process, SIGUSR1);
      }
  
-@@ -3176,28 +3317,36 @@ namespace gsr {
+@@ -3176,28 +3344,36 @@ namespace gsr {
          if(recording_status != RecordingStatus::REPLAY || gpu_screen_recorder_process <= 0)
              return;
  
@@ -630,16 +699,17 @@ index 921bdd3..8933c94 100644
      }
  
      static const char* change_container_if_codec_not_supported(const char *video_codec, const char *container) {
-@@ -3340,7 +3489,7 @@ namespace gsr {
+@@ -3340,7 +3516,8 @@ namespace gsr {
              stop_gpu_screen_recorder_process();
              gpu_screen_recorder_process = -1;
              recording_status = RecordingStatus::NONE;
 -            replay_save_duration_min = 0;
 +            replay_save_duration_sec = 0;
++            mirror_layer_recording(false);
              update_ui_replay_stopped();
              replay_launched_manually = false;
  
-@@ -3436,6 +3585,10 @@ namespace gsr {
+@@ -3436,6 +3613,10 @@ namespace gsr {
          args.push_back("-ro");
          args.push_back(config.record_config.save_directory.c_str());
  
@@ -650,6 +720,38 @@ index 921bdd3..8933c94 100644
          args.push_back(nullptr);
  
          current_recording_config = config;
+@@ -3494,6 +3675,7 @@ namespace gsr {
+                     if(config.record_config.record_options.show_notifications)
+                         show_notification(TR("Started recording in the replay session"), short_notification_timeout_seconds, get_color_theme().tint_color, get_color_theme().tint_color, NotificationType::RECORD);
+                     update_ui_recording_started();
++                    mirror_layer_recording(true);
+ 
+                     // TODO: This will be incorrect if the user uses portal capture, as capture wont start until the user has
+                     // selected what to capture and accepted it.
+@@ -3522,6 +3704,7 @@ namespace gsr {
+                     if(config.record_config.record_options.show_notifications)
+                         show_notification(TR("Started recording in the streaming session"), short_notification_timeout_seconds, get_color_theme().tint_color, get_color_theme().tint_color, NotificationType::RECORD);
+                     update_ui_recording_started();
++                    mirror_layer_recording(true);
+ 
+                     // TODO: This will be incorrect if the user uses portal capture, as capture wont start until the user has
+                     // selected what to capture and accepted it.
+@@ -3663,6 +3846,7 @@ namespace gsr {
+         } else {
+             recording_status = RecordingStatus::RECORD;
+             update_ui_recording_started();
++            mirror_layer_recording(true);
+ 
+             if(led_indicator && config.record_config.record_options.use_led_indicator)
+                 led_indicator->set_led(true);
+@@ -3800,6 +3984,7 @@ namespace gsr {
+             stop_gpu_screen_recorder_process();
+             gpu_screen_recorder_process = -1;
+             recording_status = RecordingStatus::NONE;
++            mirror_layer_recording(false);
+             update_ui_streaming_stopped();
+ 
+             if(led_indicator)
 diff --git a/src/Utils.cpp b/src/Utils.cpp
 index 9348807..835c953 100644
 --- a/src/Utils.cpp

@@ -1,6 +1,6 @@
 * text=auto eol=lf
 *.py text
-*.patch text
+*.patch text whitespace=-blank-at-eol
 *.svg text
 
 upstream/gpu-screen-recorder/study/*.png binary
