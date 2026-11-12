@@ -54,6 +54,44 @@ def graph_file_option():
     return '-filter_complex_script' if '-filter_complex_script' in help_text else '-/filter_complex'
 
 
+@functools.lru_cache(maxsize=64)
+def font_file(name):
+    return subprocess.check_output(['fc-match','-f','%{file}',name],text=True).strip()
+
+
+@functools.lru_cache(maxsize=128)
+def source_frame_interval(file,mtime,size):
+    info=subprocess.check_output(['ffprobe','-v','error','-select_streams','v:0','-show_entries','stream=avg_frame_rate','-of','json',file],text=True,timeout=10)
+    rate=json.loads(info)['streams'][0]['avg_frame_rate'];a,b=rate.split('/')
+    return float(b)/float(a) if float(a)>0 else 1/30
+
+
+def preview_project_snapshot(path,snapshot):
+    """Validate in-memory preview sources with the same folder boundary as disk."""
+    if not isinstance(snapshot,dict) or snapshot.get('format')!='katman' or snapshot.get('version')!=1 or not isinstance(snapshot.get('sources'),list):
+        raise ValueError('The preview source snapshot is invalid.')
+    root=Path(path).parent.resolve();ids=set()
+    for source in snapshot['sources']:
+        if not isinstance(source,dict) or not isinstance(source.get('id'),str) or not source['id'] or source['id'] in ids or source.get('type') not in ('video','audio') or not isinstance(source.get('file'),str) or not source['file'] or '\0' in source['file']:
+            raise ValueError('The preview source snapshot is invalid.')
+        ids.add(source['id']);file=(root/source['file']).resolve()
+        if not file.is_relative_to(root):raise ValueError('Media files must be inside the project folder.')
+        if not file.is_file():raise ValueError('Source media is missing: '+source['file'])
+    return copy.deepcopy(snapshot)
+
+
+def media_fingerprint(path,project,model=None):
+    """Invalidate previews when source content or external effect assets change."""
+    files=[(Path(path).parent/source['file']).resolve() for source in project['sources']]
+    for track in (model or {}).get('tracks',[]):
+        for clip in track['clips']:
+            files.extend(Path(clip[key]).expanduser().resolve() for key in ('lut','stabilization') if clip.get(key))
+    rows=[]
+    for file in files:
+        stat=file.stat();rows.append((str(file),stat.st_size,stat.st_mtime_ns,stat.st_ctime_ns))
+    return json.dumps(rows,separators=(',',':'))
+
+
 def compile_graph(folder,project,model,tmp,options=None,window=None,frame=False):
     from .editing import annotation_image
     options=options or {};origin,end=window or (0,duration(model));span=max(.04,end-origin)
@@ -61,7 +99,7 @@ def compile_graph(folder,project,model,tmp,options=None,window=None,frame=False)
     cw,ch=max(2,round(native_w*factor/2)*2),max(2,round(native_h*factor/2)*2);fps=options.get('fps',model.get('fps',30))
     sources={s['id']:s for s in project['sources']};args=['ffmpeg','-hide_banner','-v','error','-y','-nostdin','-filter_complex_threads','2'];graph=[] if options.get('audio_only') else [f'color=c=black:s={cw}x{ch}:r={fps}:d={number(span)}[background]'];video='background';audio=[];input_index=0;counter=0
     for track in model['tracks']:
-        if options.get('audio_only') and track['kind']=='video' or frame and track['kind']=='audio':continue
+        if options.get('audio_only') and track['kind']=='video' or (frame or options.get('video_only')) and track['kind']=='audio':continue
         if track.get('mute') and track['kind']=='audio' or not track.get('visible',True) and track['kind']=='video':continue
         for clip in track['clips']:
             if clip.get('mute'):continue
@@ -73,7 +111,7 @@ def compile_graph(folder,project,model,tmp,options=None,window=None,frame=False)
                 a=max(origin,clip['start']+out_offset);b=min(end,clip['start']+out_offset+out_length)
                 if b<=a+.00001:continue
                 raw_length=(b-a)*rate;offset=source_offset+(a-clip['start']-out_offset)*rate
-                if clip.get('reverse'):offset=clip['length']-offset-raw_length
+                if clip.get('reverse'):offset=clip['length']-offset-(source_frame_interval(str(file),file.stat().st_mtime_ns,file.stat().st_size) if frame else raw_length)
                 seek=clip.get('freeze_at',clip['in']) if clip.get('freeze') else clip['in']+offset
                 proxy_key=hashlib.sha256((str(file)+str(file.stat().st_mtime_ns)).encode()).hexdigest()[:20];proxy=CACHE/'studio-proxies'/(proxy_key+'.mp4')
                 if options.get('proxy') and isvideo and proxy.exists() and not clip.get('stabilization'):file=proxy
@@ -81,13 +119,13 @@ def compile_graph(folder,project,model,tmp,options=None,window=None,frame=False)
                 args+=(['-framerate',str(fps),'-loop','1'] if image else ['-ss',number(max(0,seek))])+['-i',str(file)]
                 idx=input_index;input_index+=1;tag='c'+str(counter);counter+=1;local=f'(t+{number(origin-clip["start"])})';geq_local=local.replace('t','T');filters=[]
                 if isvideo:
-                    if clip.get('freeze') or image:filters+=['trim=end_frame=1','setpts=PTS-STARTPTS',f'tpad=stop_mode=clone:stop_duration={number(b-a)}']
+                    if frame or clip.get('freeze') or image:filters+=['trim=end_frame=1','setpts=PTS-STARTPTS',f'tpad=stop_mode=clone:stop_duration={number(b-a)}']
                     else:filters+=[f'trim=duration={number(raw_length)}']
                     if clip.get('stabilization'):
                         tr=Path(clip['stabilization'])
                         if not tr.is_file():raise ValueError('Stabilization analysis is missing. Analyze this clip again.')
                         filters+=["format=yuv420p",f"vidstabtransform=input='{quote(tr)}':smoothing=15:optzoom=1"]
-                    if clip.get('reverse') and not clip.get('freeze'):filters+=['reverse']
+                    if clip.get('reverse') and not clip.get('freeze') and not frame:filters+=['reverse']
                     filters+=[f'setpts=(PTS-STARTPTS)/{number(rate)}+{number(a-origin)}/TB']
                     if any(clip.get(key,default)!=default for key,default in [('crop_x',0),('crop_y',0),('crop_w',1),('crop_h',1)]):
                         filters+=[f"crop=w=iw*{number(clip.get('crop_w',1))}:h=ih*{number(clip.get('crop_h',1))}:x=iw*{number(clip.get('crop_x',0))}:y=ih*{number(clip.get('crop_y',0))}"]
@@ -148,7 +186,7 @@ def compile_graph(folder,project,model,tmp,options=None,window=None,frame=False)
                 graph.append(f'[{tag}copy]{effect}[{tag}effect]')
             new=tag+'out';graph.append(f'[{base}][{tag}effect][{tag}mask]maskedmerge[{new}]');video=new
         elif kind=='text':
-            text=tmp/(tag+'.txt');text.write_text(ann.get('text',''),encoding='utf8');font=subprocess.check_output(['fc-match','-f','%{file}',ann.get('font','Noto Sans')],text=True).strip()
+            text=tmp/(tag+'.txt');text.write_text(ann.get('text',''),encoding='utf8');font=font_file(ann.get('font','Noto Sans'))
             x=f'({curve(ann,"x",local,0)})*{number(factor)}';y=f'({curve(ann,"y",local,0)})*{number(factor)}';alpha=curve(ann,'opacity',local,1)
             graph.append(f"[{video}]drawtext=fontfile='{quote(font)}':textfile='{quote(text)}':fontsize={number(ann.get('font_size',36)*factor)}:fontcolor={ann.get('color','#ffffff').replace('#','0x')}:borderw=1:bordercolor=black:alpha='{alpha}':x='{x}':y='{y}':enable='{enable}'[{tag}]");video=tag
         else:
@@ -176,26 +214,30 @@ def compile_graph(folder,project,model,tmp,options=None,window=None,frame=False)
             header=f'[Script Info]\nScriptType: v4.00+\nPlayResX: {native_w}\nPlayResY: {native_h}\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n'
             file=tmp/'captions.ass';file.write_text(header+'\n'.join(styles)+'\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n'+'\n'.join(events),encoding='utf8')
             graph.append(f"[{video}]ass=filename='{quote(file)}'[captioned]");video='captioned'
-    if not options.get('audio_only'):graph.append(f'[{video}]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,{"format=nv12,hwupload" if (not frame and options.get("codec","").endswith("_vaapi")) else "format=yuv420p"}[vout]')
+    if not options.get('audio_only'):graph.append(f'[{video}]'+('format=rgba,' if options.get('pixel_format')=='rgba' else '')+f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,{"format=nv12,hwupload" if (not frame and options.get("codec","").endswith("_vaapi")) else "format="+options.get("pixel_format","yuv420p")}[vout]')
     if audio:graph.append(''.join(audio)+f'amix=inputs={len(audio)}:normalize=0:duration=longest,alimiter=limit=0.95:latency=1[aout]')
-    else:graph.append(f'anullsrc=r=48000:cl=stereo,atrim=duration={number(span)}[aout]')
-    if frame:graph.append('[aout]anullsink')
+    elif not frame and not options.get('video_only'):graph.append(f'anullsrc=r=48000:cl=stereo,atrim=duration={number(span)}[aout]')
     if (not frame and not options.get('audio_only') and options.get('codec','').endswith('_vaapi')):
         from .hardware import render_device
         device=options.get('vaapi_device') or render_device(settings())
         args[1:1]=['-init_hw_device','vaapi=layer:'+device,'-filter_hw_device','layer']
     script=tmp/'graph.ffscript';script.write_text(';\n'.join(graph));args+=[graph_file_option(),str(script)]
     if not options.get('audio_only'):args+=['-map','[vout]']
-    if not frame:args+=['-map','[aout]']
+    if not frame and not options.get('video_only'):args+=['-map','[aout]']
     args+=['-t',number(span)]
     return args
 
 
-def export_studio(path,destination,options=None,progress=None,cancel=None,model=None,window=None,frame=False):
-    path,project=load_project(path);model=copy.deepcopy(model or project['studio']);validate(model,project);options=copy.deepcopy(options or {})
+def export_studio(path,destination,options=None,progress=None,cancel=None,model=None,window=None,frame=False,project_snapshot=None):
+    if project_snapshot is None:path,project=load_project(path)
+    else:
+        path=Path(path).expanduser().resolve()
+        if path.is_dir():path=path/'project.katman'
+        project=preview_project_snapshot(path,project_snapshot)
+    model=copy.deepcopy(model or project['studio']);validate(model,project);options=copy.deepcopy(options or {})
     dest=Path(destination).expanduser().resolve()
     if dest.exists():raise ValueError('Choose a new filename. Existing media is never overwritten.')
-    if dest==path or dest.is_relative_to(path.parent/'media'):raise ValueError('Exports cannot replace original recording media.')
+    if dest==path or dest in {(path.parent/source['file']).resolve() for source in project['sources']} or dest.is_relative_to(path.parent/'media'):raise ValueError('Exports cannot replace original recording media.')
     dest.parent.mkdir(parents=True,exist_ok=True);ext=dest.suffix or '.mp4';output=dest.with_name('.'+dest.stem+'-'+uuid.uuid4().hex[:8]+ext)
     try:
         with tempfile.TemporaryDirectory(prefix='layer-studio-',dir=dest.parent) as td:

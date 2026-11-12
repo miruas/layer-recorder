@@ -1,3 +1,4 @@
+/* Modified by Layer on 2026-11-12: bound capture size without upscaling. */
 #include "../../include/capture/portal.h"
 #include "../../include/log.h"
 #include "../../include/color_conversion.h"
@@ -297,7 +298,7 @@ static int gsr_capture_portal_start(gsr_capture *cap, gsr_capture_metadata *capt
     if(self->params.output_resolution.x == 0 && self->params.output_resolution.y == 0) {
         capture_metadata->video_size = self->capture_size;
     } else {
-        self->params.output_resolution = scale_keep_aspect_ratio(self->capture_size, self->params.output_resolution);
+        self->params.output_resolution = limit_capture_resolution(self->capture_size, self->params.output_resolution);
         capture_metadata->video_size = self->params.output_resolution;
     }
 

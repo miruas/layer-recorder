@@ -82,6 +82,8 @@ int create_directory_recursive(char *path);
 void setup_dma_buf_attrs(intptr_t *img_attr, uint32_t format, uint32_t width, uint32_t height, const int *fds, const uint32_t *offsets, const uint32_t *pitches, const uint64_t *modifiers, int num_planes, bool use_modifier);
 
 vec2i scale_keep_aspect_ratio(vec2i from, vec2i to);
+/* Layer: capture limits never upscale; drawing/overlay scaling is unchanged. */
+vec2i limit_capture_resolution(vec2i from, vec2i to);
 vec2i gsr_capture_get_target_position(vec2i output_size, gsr_capture_metadata *capture_metadata);
 
 unsigned int gl_create_texture(gsr_egl *egl, int width, int height, int internal_format, unsigned int format, int filter);

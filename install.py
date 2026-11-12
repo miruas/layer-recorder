@@ -74,7 +74,7 @@ Requisite=graphical-session.target
 [Service]
 Type=simple
 Environment={systemd_quote('PYTHONPATH='+str(ROOT))}
-Environment={systemd_quote('PATH='+str(bin_dir)+':/usr/local/bin:/usr/bin:/bin')}
+Environment={systemd_quote('PATH='+str(ROOT/'bin')+':'+str(bin_dir)+':/usr/local/bin:/usr/bin:/bin')}
 ExecStart={systemd_quote(interpreter)} -m katman.daemon
 WorkingDirectory={systemd_quote(ROOT)}
 Restart=on-failure
@@ -93,7 +93,7 @@ WantedBy=graphical-session.target
         binary=ROOT/'overlay/bin/gsr-ui'
         if not binary.is_file():parser.error('Build the overlay with tools/build-native.py gsr-ui first.')
         if not (config/('systemd/user/'+args.gsr_service)).exists():parser.error('The specified user GSR service does not exist. Install/start GSR separately first.')
-        write(dropin,f'[Unit]\nWants=katman.service\nAfter=katman.service\n\n[Service]\nEnvironment=LANG=C.UTF-8\nEnvironment=LC_ALL=C.UTF-8\nEnvironment={systemd_quote("PATH="+str(bin_dir)+":/usr/local/bin:/usr/bin:/bin")}\nExecStart=\nExecStart={systemd_quote(binary)} launch-daemon\n')
+        write(dropin,f'[Unit]\nWants=katman.service\nAfter=katman.service\n\n[Service]\nEnvironment=LANG=C.UTF-8\nEnvironment=LC_ALL=C.UTF-8\nEnvironment={systemd_quote("PATH="+str(ROOT/"bin")+":"+str(bin_dir)+":/usr/local/bin:/usr/bin:/bin")}\nExecStart=\nExecStart={systemd_quote(binary)} launch-daemon\n')
     systemctl('daemon-reload')
     if args.enable:
         systemctl('enable','katman.service')

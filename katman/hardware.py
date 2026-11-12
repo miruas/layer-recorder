@@ -50,6 +50,23 @@ def gsr_info(program='gpu-screen-recorder'):
     return result
 
 
+def capture_resolution_limit(display, value):
+    """Return GSR bounds, clamped to known physical source size (never logical)."""
+    from .configuration import RESOLUTION_PRESETS, validate_capture_resolution
+    value = validate_capture_resolution(value)
+    bounds = RESOLUTION_PRESETS[value] if isinstance(value, str) else (value['width'], value['height'])
+    if bounds is None:
+        return None
+    width = display.get('capture_width', display.get('width', 0))
+    height = display.get('capture_height', display.get('height', 0))
+    if type(width) is int and type(height) is int and width > 1 and height > 1:
+        scale = min(1.0, bounds[0] / width, bounds[1] / height)
+        return max(2, int(width * scale) // 2 * 2), max(2, int(height * scale) // 2 * 2)
+    # Portal geometry is only known once GSR opens the source. Its bounds
+    # preserve aspect ratio; the recorder applies the no-upscale constraint.
+    return bounds
+
+
 def capture_command(display,config,direct,info,helper=None,inventory=None):
     vendor=config['gpu_vendor'];codec=config.get('capture_codec','h264');target=display['name']
     if vendor!='auto' and vendor!=info.get('vendor'):raise RuntimeError('GSR captures with the display GPU. The requested GPU profile does not match its advertised GPU.')
@@ -62,6 +79,8 @@ def capture_command(display,config,direct,info,helper=None,inventory=None):
         rate=['-bm','qp','-q',quality]
     else:raise ValueError('capture_quality must be custom, medium, high, very_high or ultra.')
     command=[gsr_program(config),'-w',target,'-f',str(config['fps']),'-encoder','gpu','-fallback-cpu-encoding','no','-k',codec,*rate,'-keyint','1','-c','segment','-ffmpeg-opts','segment_time=2;segment_format=matroska;segment_list={list};reset_timestamps=1;segment_format_options=cluster_time_limit=250:flush_packets=1','-write-first-frame-ts','yes','-o','{output}','-v','no']
+    limit=capture_resolution_limit(display,config.get('capture_resolution','native'))
+    if limit:command+=['-s',f'{limit[0]}x{limit[1]}']
     if target=='portal':command+=['-restore-portal-session','yes']
     return command,'GPU Screen Recorder'
 

@@ -202,6 +202,43 @@
         "very_high",
         "ultra"
       ]
+    },
+    "capture_resolution": {
+      "default": "native",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "native",
+            "720p",
+            "1080p",
+            "1440p",
+            "4k"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "width",
+            "height"
+          ],
+          "properties": {
+            "width": {
+              "type": "integer",
+              "minimum": 32,
+              "maximum": 32768,
+              "multipleOf": 2
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 32,
+              "maximum": 32768,
+              "multipleOf": 2
+            }
+          }
+        }
+      ]
     }
   }
 }

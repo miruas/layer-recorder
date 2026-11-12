@@ -89,3 +89,50 @@ GSR's successful replay action start the shared Layer ring.
 
 The public editor uses a neutral native palette. Personal theme-manager
 integration is outside the public source tree.
+
+### Capture resolution limits
+
+Recording and replay follow their own GSR resolution controls. In each GSR
+settings page, choose **Native**, **720p**, **1080p**, **1440p**, **4K**, or
+**Custom**. A preset is an upper bound: the capture keeps its aspect ratio and
+never enlarges a smaller source. For example, a 2560 × 1600 screen limited to
+1080p produces 1728 × 1080, while a 1280 × 720 screen stays 1280 × 720.
+Custom bounds are rounded down to even pixels. The focused-window area control
+continues to specify its capture area separately.
+
+The presets use GSR's existing public schema, with no additional GSR keys:
+
+```json
+{
+  "record": {
+    "record_options": {
+      "change_video_resolution": true,
+      "video_width": 1920,
+      "video_height": 1080
+    }
+  },
+  "replay": {
+    "record_options": {
+      "change_video_resolution": true,
+      "video_width": 1920,
+      "video_height": 1080
+    }
+  }
+}
+```
+
+Set `change_video_resolution` to `false` for Native. Resolution settings do not
+fall back from recording to replay or from replay to recording. Missing settings
+retain Layer's configured default (Native by default). Codec, quality, bitrate,
+and frame rate continue to follow their existing GSR mappings independently.
+
+For standalone Layer configuration, set `"gsr_preferences": false` and use
+`"capture_resolution": "native"`, `"720p"`, `"1080p"`, `"1440p"`, or `"4k"`.
+Custom limits use `"capture_resolution": {"width": 1600, "height": 1000}`;
+both dimensions must be even integers between 32 and 32768. This limits each
+independent capture producer through GSR's `-s WIDTHxHEIGHT`, including portal
+sources whose dimensions become available only when capture starts. Known
+physical source dimensions additionally clamp the requested bounds before
+launch. Layout metadata retains its original placement and source dimensions;
+the saved encoded track is probed for its actual size. Capture resolution is
+independent of export quality and export dimensions.

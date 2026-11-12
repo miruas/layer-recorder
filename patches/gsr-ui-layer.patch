@@ -104,7 +104,7 @@ index c0a3576..760329b 100644
          ComboBox *language_combo_box_ptr = nullptr;
          CheckBox *exclude_metadata_checkbox_ptr = nullptr;
 diff --git a/include/gui/SettingsPage.hpp b/include/gui/SettingsPage.hpp
-index 3935109..fa79653 100644
+index 3935109..c469cc7 100644
 --- a/include/gui/SettingsPage.hpp
 +++ b/include/gui/SettingsPage.hpp
 @@ -1,3 +1,4 @@
@@ -121,7 +121,15 @@ index 3935109..fa79653 100644
          std::unique_ptr<List> create_replay_storage();
          std::unique_ptr<RadioButton> create_start_replay_automatically();
          std::unique_ptr<Widget> create_start_replay_automatically_section();
-@@ -227,6 +230,8 @@ namespace gsr {
+@@ -183,6 +186,7 @@ namespace gsr {
+         ScrollablePage *settings_scrollable_page_ptr = nullptr;
+         List *settings_list_ptr = nullptr;
+         List *area_size_list_ptr = nullptr;
++        ComboBox *video_resolution_preset_ptr = nullptr;
+         List *video_resolution_list_ptr = nullptr;
+         List *restore_portal_session_list_ptr = nullptr;
+         List *color_range_list_ptr = nullptr;
+@@ -227,6 +231,8 @@ namespace gsr {
          Entry *stream_url_entry_ptr = nullptr;
          Entry *stream_key_entry_ptr = nullptr;
          Entry *replay_time_entry_ptr = nullptr;
@@ -898,7 +906,7 @@ index 4b5f805..be98649 100644
                  hotkey_configure_action_name = TR("Show/hide UI");
                  break;
 diff --git a/src/gui/SettingsPage.cpp b/src/gui/SettingsPage.cpp
-index c0a3872..8244c68 100644
+index c0a3872..3064c46 100644
 --- a/src/gui/SettingsPage.cpp
 +++ b/src/gui/SettingsPage.cpp
 @@ -1,3 +1,4 @@
@@ -906,7 +914,63 @@ index c0a3872..8244c68 100644
  #include "../../include/gui/SettingsPage.hpp"
  #include "../../include/gui/GsrPage.hpp"
  #include "../../include/gui/Label.hpp"
-@@ -1223,6 +1224,24 @@ namespace gsr {
+@@ -227,9 +228,23 @@ namespace gsr {
+     }
+ 
+     std::unique_ptr<Widget> SettingsPage::create_change_video_resolution_section() {
+-        auto checkbox = std::make_unique<CheckBox>(get_theme().body_font_desc.c_str(), TR("Change video resolution"));
++        auto list = std::make_unique<List>(List::Orientation::VERTICAL);
++        list->add_widget(std::make_unique<Label>(get_theme().body_font_desc.c_str(), TR("Resolution limit (keeps aspect ratio):"), get_color_theme().text_color));
++        auto preset = std::make_unique<ComboBox>(get_theme().body_font_desc.c_str());
++        preset->add_item(TR("Native"), "native");
++        preset->add_item("720p (1280 x 720)", "1280x720");
++        preset->add_item("1080p (1920 x 1080)", "1920x1080");
++        preset->add_item("1440p (2560 x 1440)", "2560x1440");
++        preset->add_item("4K (3840 x 2160)", "3840x2160");
++        preset->add_item(TR("Custom"), "custom");
++        video_resolution_preset_ptr = preset.get();
++        list->add_widget(std::move(preset));
++        // Retain the existing config binding; presets write canonical fields.
++        auto checkbox = std::make_unique<CheckBox>(get_theme().body_font_desc.c_str(), TR("Limit video resolution"));
++        checkbox->set_visible(false);
+         change_video_resolution_checkbox_ptr = checkbox.get();
+-        return checkbox;
++        list->add_widget(std::move(checkbox));
++        return list;
+     }
+ 
+     std::unique_ptr<Widget> SettingsPage::create_capture_target_section() {
+@@ -1109,15 +1124,26 @@ namespace gsr {
+             const bool focused_selected = id == "focused";
+             const bool portal_selected = id == "portal";
+             area_size_list_ptr->set_visible(focused_selected);
+-            video_resolution_list_ptr->set_visible(!focused_selected && change_video_resolution_checkbox_ptr->is_checked());
+-            change_video_resolution_checkbox_ptr->set_visible(!focused_selected);
++            video_resolution_list_ptr->set_visible(!focused_selected && video_resolution_preset_ptr->get_selected_id() == "custom");
++            video_resolution_preset_ptr->set_visible(!focused_selected);
+             restore_portal_session_list_ptr->set_visible(portal_selected);
+             return true;
+         };
+ 
+         change_video_resolution_checkbox_ptr->on_changed = [this](bool checked) {
+             const bool focused_selected = record_area_box_ptr->get_selected_id() == "focused";
+-            video_resolution_list_ptr->set_visible(!focused_selected && checked);
++            video_resolution_list_ptr->set_visible(!focused_selected && checked && video_resolution_preset_ptr->get_selected_id() == "custom");
++        };
++
++        video_resolution_preset_ptr->on_selection_changed = [this](std::string_view, std::string_view id) {
++            change_video_resolution_checkbox_ptr->set_checked(id != "native");
++            if(id != "native" && id != "custom") {
++                const size_t separator = id.find('x');
++                video_width_entry_ptr->set_text(std::string(id.substr(0, separator)));
++                video_height_entry_ptr->set_text(std::string(id.substr(separator + 1)));
++            }
++            video_resolution_list_ptr->set_visible(record_area_box_ptr->get_selected_id() != "focused" && id == "custom");
++            return true;
+         };
+ 
+         video_quality_box_ptr->on_selection_changed = [this](std::string_view, std::string_view id) {
+@@ -1223,6 +1249,24 @@ namespace gsr {
          return replay_time_list;
      }
  
@@ -931,7 +995,7 @@ index c0a3872..8244c68 100644
      std::unique_ptr<List> SettingsPage::create_replay_storage() {
          auto list = std::make_unique<List>(List::Orientation::VERTICAL);
          list->add_widget(std::make_unique<Label>(get_theme().body_font_desc.c_str(), TR("Where should temporary replay data be stored?"), get_color_theme().text_color));
-@@ -1399,6 +1418,7 @@ namespace gsr {
+@@ -1399,6 +1443,7 @@ namespace gsr {
          file_info_data_list->add_widget(create_save_directory(TR("Directory to save replays:")));
          file_info_data_list->add_widget(create_container_section());
          file_info_data_list->add_widget(create_replay_time());
@@ -939,7 +1003,22 @@ index c0a3872..8244c68 100644
          file_info_list->add_widget(std::move(file_info_data_list));
          file_info_list->add_widget(create_estimated_replay_file_size());
          settings_list_ptr->add_widget(std::make_unique<Subsection>(TR("File info"), std::move(file_info_list), mgl::vec2f(settings_scrollable_page_ptr->get_inner_size().x, 0.0f)));
-@@ -1925,6 +1945,21 @@ namespace gsr {
+@@ -1897,6 +1942,14 @@ namespace gsr {
+         if(record_options.video_height < 32)
+             record_options.video_height = 32;
+         video_height_entry_ptr->set_text(std::to_string(record_options.video_height));
++        std::string resolution_preset = "native";
++        if(record_options.change_video_resolution) {
++            resolution_preset = std::to_string(record_options.video_width) + "x" + std::to_string(record_options.video_height);
++            if(resolution_preset != "1280x720" && resolution_preset != "1920x1080" && resolution_preset != "2560x1440" && resolution_preset != "3840x2160")
++                resolution_preset = "custom";
++        }
++        video_resolution_preset_ptr->set_selected_item(resolution_preset);
++
+ 
+         if(record_options.fps < 1)
+             record_options.fps = 1;
+@@ -1925,6 +1978,21 @@ namespace gsr {
          if(config.replay_config.replay_time > 86400)
              config.replay_config.replay_time = 86400;
          replay_time_entry_ptr->set_text(std::to_string(config.replay_config.replay_time));
@@ -961,7 +1040,18 @@ index c0a3872..8244c68 100644
      }
  
      void SettingsPage::load_record() {
-@@ -2087,6 +2122,24 @@ namespace gsr {
+@@ -1994,8 +2062,8 @@ namespace gsr {
+         record_options.record_area_option = record_area_box_ptr->get_selected_id();
+         record_options.record_area_width = sv_to_int<int32_t>(area_width_entry_ptr->get_text());
+         record_options.record_area_height = sv_to_int<int32_t>(area_height_entry_ptr->get_text());
+-        record_options.video_width = sv_to_int<int32_t>(video_width_entry_ptr->get_text());
+-        record_options.video_height = sv_to_int<int32_t>(video_height_entry_ptr->get_text());
++        record_options.video_width = std::max(32, std::min(32768, sv_to_int<int32_t>(video_width_entry_ptr->get_text()))) / 2 * 2;
++        record_options.video_height = std::max(32, std::min(32768, sv_to_int<int32_t>(video_height_entry_ptr->get_text()))) / 2 * 2;
+         record_options.fps = sv_to_int<int32_t>(framerate_entry_ptr->get_text());
+         record_options.video_bitrate = sv_to_int<int32_t>(video_bitrate_entry_ptr->get_text());
+         record_options.change_video_resolution = change_video_resolution_checkbox_ptr->is_checked();
+@@ -2087,6 +2155,24 @@ namespace gsr {
              config.replay_config.replay_time = 5;
              replay_time_entry_ptr->set_text("5");
          }

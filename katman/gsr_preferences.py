@@ -106,9 +106,11 @@ def _read_legacy_preferences(text: str) -> dict:
         "replay.record_options.fps",
         "replay.record_options.video_bitrate",
         "replay.time",
+        *{f"{mode}.record_options.{key}" for mode in ("record", "replay") for key in ("video_width", "video_height")},
         "replay.short_save_duration",
         "replay.long_save_duration",
     }
+    boolean_options = {f"{mode}.record_options.change_video_resolution" for mode in ("record", "replay")}
     text_options = {
         "record.record_options.codec",
         "record.record_options.video_quality",
@@ -121,9 +123,13 @@ def _read_legacy_preferences(text: str) -> dict:
         if not line.strip():
             continue
         key, separator, value = line.partition(" ")
-        if not separator or key not in integer_options | text_options:
+        if not separator or key not in integer_options | text_options | boolean_options:
             continue
-        if key in integer_options:
+        if key in boolean_options:
+            if value.strip() not in ("true", "false"):
+                raise ValueError(f"Could not read GSR preferences: invalid {key}.")
+            parsed = value.strip() == "true"
+        elif key in integer_options:
             try:
                 parsed: object = int(value.strip(), 10)
             except ValueError as exc:
@@ -226,6 +232,9 @@ def validate_effective_settings(settings: dict) -> dict:
     if not isinstance(settings, dict):
         raise ValueError("Settings must be a dictionary.")
 
+    if "capture_resolution" in settings:
+        from .configuration import validate_capture_resolution
+        validate_capture_resolution(settings["capture_resolution"])
     if "fps" in settings:
         _integer(settings["fps"], "fps", 1, 240)
     if "bitrate" in settings:
@@ -280,6 +289,21 @@ def effective_settings(layer: dict, gsr: dict | None, mode: str = "replay") -> d
         return result
     if not isinstance(gsr, dict):
         raise ValueError("GSR preferences must be a dictionary or None.")
+
+    # Resolution belongs strictly to the selected mode. A missing record
+    # setting must never inherit replay's downscale limit, or vice versa.
+    options = _record_options(gsr, mode)
+    if options is not None and "change_video_resolution" in options:
+        enabled = options["change_video_resolution"]
+        if type(enabled) is not bool:
+            raise ValueError("GSR record_options.change_video_resolution must be true or false.")
+        if enabled:
+            result["capture_resolution"] = {
+                key: _integer(options.get("video_" + key), "record_options.video_" + key, 32, 32768) // 2 * 2
+                for key in ("width", "height")
+            }
+        else:
+            result["capture_resolution"] = "native"
 
     fps = _record_option(gsr, mode, "fps")
     if fps is not _MISSING:
