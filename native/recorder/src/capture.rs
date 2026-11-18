@@ -16,6 +16,13 @@ use std::{
     thread,
     time::Duration,
 };
+/// A healthy producer emits a closed segment well inside this window (2 s segments).
+pub const SEGMENT_STALL_SECONDS: f64 = 10.;
+/// True when no new media arrived for the whole stall window. Old segments being pruned
+/// or archived is unrelated: only newly written rows move `last_new_segment_at`.
+fn segment_stalled(elapsed: f64, last_new_segment_at: f64) -> bool {
+    elapsed - last_new_segment_at >= SEGMENT_STALL_SECONDS
+}
 pub struct Recorder {
     pub running: bool,
     pub replay: bool,
@@ -36,6 +43,9 @@ pub struct Recorder {
     config: Value,
     program: String,
     revision: u64,
+    audio_groups: Vec<audio::Group>,
+    audio_candidates: BTreeMap<(String, String), f64>,
+    audio_orphans: BTreeMap<String, f64>,
     identity: Value,
     last_identity: f64,
     last_spawn: BTreeMap<String, f64>,
@@ -73,6 +83,9 @@ impl Recorder {
             config,
             program: String::new(),
             revision: u64::MAX,
+            audio_groups: Vec::new(),
+            audio_candidates: BTreeMap::new(),
+            audio_orphans: BTreeMap::new(),
             identity: json!({"application":"Desktop","shortcut_error":""}),
             last_identity: 0.,
             last_spawn: BTreeMap::new(),
@@ -144,6 +157,9 @@ impl Recorder {
         self.video_retries.clear();
         self.video_generations.clear();
         self.video_inventory_error.clear();
+        self.audio_groups.clear();
+        self.audio_candidates.clear();
+        self.audio_orphans.clear();
         self.last_video_poll = now();
         self.root = Some(buffer_storage::create()?);
         self.archive = Some(self.cache.join(format!(
@@ -200,10 +216,11 @@ impl Recorder {
                     if !t.alive() {
                         bail!("{}", t.error());
                     }
+                    // Read media rows instead of stat'ing the first segment file: that
+                    // file disappears from a healthy track as soon as the ring rotates.
+                    let _ = t.segments(false);
                 }
-                if self.tracks.iter().filter(|t|t.meta["type"] == "video").all(|t| {
-                    t.path.join("%08d.mkv.ts").exists() && t.path.join("00000000.mkv").exists()
-                }) {
+                if self.tracks.iter().filter(|t|t.meta["type"] == "video").all(|t| !t.rows.is_empty()) {
                     break;
                 }
                 if now() > deadline {
@@ -229,69 +246,141 @@ impl Recorder {
         Ok(())
     }
     fn discover_audio(&mut self) -> Result<()> {
-        let Some(monitor) = &self.monitor else { return Ok(()); };
-        let (groups, revision, error) = {
-            let graph = monitor.state.lock().unwrap();
-            (
-                audio::groups(&graph.nodes),
-                graph.revision,
-                graph.error.clone(),
-            )
-        };
+        if self.monitor.is_none() {
+            return Ok(());
+        }
+        let revision = self
+            .monitor
+            .as_ref()
+            .map(|m| m.state.lock().unwrap().revision)
+            .unwrap_or_default();
+        let error = self
+            .monitor
+            .as_ref()
+            .map(|m| m.state.lock().unwrap().error.clone())
+            .unwrap_or_default();
         if !error.is_empty() {
             self.error(error);
         }
-        if revision == self.revision {
-            return Ok(());
+        // Recompute the group list only when the graph changed, but reconcile on every
+        // tick so a selector that stops changing still becomes stable.
+        if revision != self.revision {
+            let groups = match self.monitor.as_ref() {
+                Some(monitor) => {
+                    let graph = monitor.state.lock().unwrap();
+                    audio::groups(&graph.nodes)
+                }
+                None => Vec::new(),
+            };
+            self.revision = revision;
+            self.audio_groups = groups;
         }
-        self.revision = revision;
+        let groups = self.audio_groups.clone();
         let elapsed = now() - self.origin;
+        audio::observe_candidates(&mut self.audio_candidates, &groups, elapsed);
         // Retire only our encoders; GSR's passive links never replace speaker routes.
-        for t in self
-            .tracks
-            .iter_mut()
-            .filter(|t| t.meta["type"] == "audio" && !t.closed)
-        {
-            let group = groups
-                .iter()
-                .find(|g| g.key == t.key && g.selector == t.selector);
-            interval(&mut t.activity, group.is_some_and(|g| g.active), elapsed);
-            interval(&mut t.presence, group.is_some(), elapsed);
-            if group.is_none() || !t.alive() {
-                t.meta["retired_at"] = json!(elapsed);
-                t.stop()?;
+        // A disappearing selector is not retired here: a transient graph change must let
+        // the running track survive, and the replacement is spawned before it is closed.
+        for index in 0..self.tracks.len() {
+            if self.tracks[index].meta["type"] != "audio"
+                || self.tracks[index].closed
+                || self.tracks[index].stopping
+            {
+                continue;
+            }
+            let (key, selector) = {
+                let track = &self.tracks[index];
+                (track.key.clone(), track.selector.clone())
+            };
+            let group = groups.iter().find(|g| g.key == key && g.selector == selector);
+            let (active, present) = (group.is_some_and(|g| g.active), group.is_some());
+            let alive = self.tracks[index].alive();
+            {
+                let track = &mut self.tracks[index];
+                interval(&mut track.activity, active, elapsed);
+                interval(&mut track.presence, present, elapsed);
+            }
+            let id = self.tracks[index].id.clone();
+            if !alive {
+                // A producer that already exited must be finalized now so the tick's
+                // error pass reports it as retired media, not as a live failure.
+                self.tracks[index].meta["retired_at"] = json!(elapsed);
+                self.tracks[index].request_stop();
+                self.tracks[index].reap();
+                self.audio_orphans.remove(&id);
+            } else if present {
+                self.audio_orphans.remove(&id);
+            } else {
+                self.audio_orphans.entry(id).or_insert(elapsed);
             }
         }
-        for mut g in groups {
-            if self
-                .tracks
-                .iter_mut()
-                .any(|t| t.key == g.key && t.selector == g.selector && t.alive())
-            {
+        // Spawn only selectors that stayed stable across the whole window.
+        for group in &groups {
+            if self.tracks.iter().any(|t| {
+                t.meta["type"] == "audio"
+                    && !t.closed
+                    && !t.stopping
+                    && t.key == group.key
+                    && t.selector == group.selector
+            }) {
+                continue;
+            }
+            if !audio::selector_stable(&self.audio_candidates, group, elapsed) {
                 continue;
             }
             if self
                 .last_spawn
-                .get(&g.key)
+                .get(&group.key)
                 .is_some_and(|last| elapsed - last < 3.)
             {
                 continue;
             }
-            self.last_spawn.insert(g.key.clone(), elapsed);
-            let mut command=vec![self.program.clone(),"-a".into(),g.selector.clone(),"-ac".into(),"opus".into(),"-ab".into(),"256".into(),"-c".into(),"segment".into(),"-ffmpeg-opts".into(),"segment_time=2;segment_format=matroska;segment_list={list};reset_timestamps=1;segment_format_options=cluster_time_limit=250:flush_packets=1".into(),"-write-first-frame-ts".into(),"yes".into(),"-o".into(),"{output}".into(),"-v".into(),"no".into()];
+            self.last_spawn.insert(group.key.clone(), elapsed);
+            let mut command=vec![self.program.clone(),"-a".into(),group.selector.clone(),"-ac".into(),"opus".into(),"-ab".into(),"256".into(),"-c".into(),"segment".into(),"-ffmpeg-opts".into(),"segment_time=2;segment_format=matroska;segment_list={list};reset_timestamps=1;segment_format_options=cluster_time_limit=250:flush_packets=1".into(),"-write-first-frame-ts".into(),"yes".into(),"-o".into(),"{output}".into(),"-v".into(),"no".into()];
             configure_audio(&mut command, &self.config)?;
-            g.meta["audio_codec"] = json!(self.config["capture_advanced"]["audio_codec"].as_str().unwrap_or("opus"));
+            let mut meta = group.meta.clone();
+            meta["audio_codec"] = json!(self.config["capture_advanced"]["audio_codec"].as_str().unwrap_or("opus"));
             let mut track = Track::spawn(
                 self.root.as_ref().unwrap(),
                 self.origin,
-                g.key,
-                g.meta,
+                group.key.clone(),
+                meta,
                 &command,
-                g.selector,
+                group.selector.clone(),
             )?;
-            interval(&mut track.activity, g.active, elapsed);
+            interval(&mut track.activity, group.active, elapsed);
             interval(&mut track.presence, true, elapsed);
             self.tracks.push(track);
+        }
+        // Retire a superseded track only once the change persisted and its replacement has
+        // been running long enough, so no audio is lost during a reconfiguration.
+        for index in 0..self.tracks.len() {
+            if self.tracks[index].meta["type"] != "audio" || self.tracks[index].closed {
+                continue;
+            }
+            let id = self.tracks[index].id.clone();
+            let Some(since) = self.audio_orphans.get(&id).copied() else {
+                continue;
+            };
+            let (key, selector) = {
+                let track = &self.tracks[index];
+                (track.key.clone(), track.selector.clone())
+            };
+            let successor = self.tracks.iter().any(|other| {
+                !other.closed
+                    && !other.stopping
+                    && other.id != id
+                    && other.meta["type"] == "audio"
+                    && other.key == key
+                    && other.selector != selector
+                    && elapsed - other.offset >= audio::SUCCESSOR_GRACE
+            });
+            let gone = !groups.iter().any(|g| g.key == key);
+            if audio::orphan_ready(since, elapsed, successor, gone) {
+                self.tracks[index].meta["retired_at"] = json!(elapsed);
+                self.tracks[index].request_stop();
+                self.audio_orphans.remove(&id);
+            }
         }
         Ok(())
     }
@@ -370,16 +459,18 @@ impl Recorder {
                 }
             }
         }
-        // Back off crashing producers, but clear a source's retry budget after
-        // it survives one complete segment. Retired sources keep their media.
+        // Back off crashing producers, but clear a source's retry budget as soon as new
+        // media arrives. Freshness comes from newly observed segments, never from the
+        // first file: pruning and archiving old segments must not look like a stall.
         for track in self.tracks.iter_mut().filter(|t| t.meta["type"]=="video" && !t.closed) {
             if track.alive() {
-                let ready=track.path.join("%08d.mkv.ts").is_file() && track.path.join("00000000.mkv").metadata().is_ok_and(|m|m.len()>500);
-                if ready && time-self.origin-track.offset > 3. { self.video_retries.remove(&track.key); }
-                else if !ready && time-self.origin-track.offset > 10. {
+                let age = time - self.origin - track.offset;
+                let stalled = segment_stalled(time - self.origin, track.last_new_segment_at);
+                if !stalled && age > 3. { self.video_retries.remove(&track.key); }
+                else if stalled && age > SEGMENT_STALL_SECONDS {
                     let count=self.video_retries.get(&track.key).map(|v|v.0).unwrap_or(0)+1;
                     self.video_retries.insert(track.key.clone(),(count,time+hotplug::retry_delay(count)));
-                    self.video_inventory_error=format!("{}: no capture frames arrived within ten seconds; retrying.",track.meta["name"].as_str().unwrap_or("Display"));
+                    self.video_inventory_error=format!("{}: no new segments arrived within ten seconds; retrying.",track.meta["name"].as_str().unwrap_or("Display"));
                     track.meta["retired_at"]=json!(time-self.origin);track.stop()?;
                 }
             } else if track.meta["hotplug_dead"] != true {
@@ -398,6 +489,10 @@ impl Recorder {
             return;
         }
         let result = (|| -> Result<()> {
+            // Finalize asynchronous stops first; a slow encoder must never block the tick.
+            for track in &mut self.tracks {
+                track.reap();
+            }
             self.discover_audio()?;
             self.discover_video()?;
             let root = self.root.as_ref().context("RAM root")?;
@@ -425,7 +520,7 @@ impl Recorder {
                     self.record_start.map(|_| elapsed - self.buffer_limit - 6.),
                     &archive,
                 )?;
-                if !t.closed && !t.alive() && !t.reported {
+                if !t.closed && !t.stopping && !t.alive() && !t.reported {
                     t.reported = true;
                     errors.push(t.error());
                 }
@@ -1008,6 +1103,40 @@ mod tests {
         let frame = util::run(&args, 20).unwrap();
         assert!(frame[2] > 200 && frame[0] < 30);
         assert!(t.rows.iter().all(|r| r.path.exists()));
+        t.stop().unwrap();
+        fs::remove_dir_all(ram).unwrap();
+    }
+    #[test]
+    fn watchdog_ignores_pruning_but_fires_on_a_real_stall() {
+        let ram = buffer_storage::create().unwrap();
+        let mut t = Track::spawn(
+            &ram,
+            now(),
+            "display:QA".into(),
+            json!({"type":"video","name":"QA","width":64,"height":64}),
+            &["sleep".into(), "60".into()],
+            String::new(),
+        )
+        .unwrap();
+        t.offset = 0.;
+        t.last_new_segment_at = 0.;
+        let mut listing = String::new();
+        for i in 0..3 {
+            let path = t.path.join(format!("{i:08}.mkv"));
+            fs::write(&path, vec![3u8; 2048]).unwrap();
+            listing.push_str(&format!("{},{},{}\n", path.display(), i * 2, i * 2 + 2));
+        }
+        fs::write(t.path.join("segments.csv"), listing).unwrap();
+        assert_eq!(t.segments(false).unwrap().len(), 3);
+        let fresh = t.last_new_segment_at;
+        // The ~300 s ring rotation removes the first segment while the encoder is fine.
+        t.prune(4., None, &ram).unwrap();
+        assert!(!t.path.join("00000000.mkv").exists());
+        assert!(!segment_stalled(now() - t.origin, t.last_new_segment_at));
+        assert_eq!(t.last_new_segment_at, fresh);
+        // A producer that truly stops emitting media is still reported.
+        t.last_new_segment_at = (now() - t.origin) - SEGMENT_STALL_SECONDS - 1.;
+        assert!(segment_stalled(now() - t.origin, t.last_new_segment_at));
         t.stop().unwrap();
         fs::remove_dir_all(ram).unwrap();
     }

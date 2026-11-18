@@ -26,6 +26,11 @@ pub struct Track {
     pub origin: f64,
     pub producer: Child,
     pub closed: bool,
+    pub stopping: bool,
+    stop_deadline: Option<Instant>,
+    /// Elapsed (`now() - origin`) of the last newly observed closed segment. Pruning or
+    /// archiving old files never touches this clock; only real new media advances it.
+    pub last_new_segment_at: f64,
     pub reported: bool,
     pub rows: Vec<Segment>,
     csv_offset: u64,
@@ -83,6 +88,9 @@ impl Track {
             origin,
             producer,
             closed: false,
+            stopping: false,
+            stop_deadline: None,
+            last_new_segment_at: offset,
             reported: false,
             rows: Vec::new(),
             csv_offset: 0,
@@ -120,8 +128,46 @@ impl Track {
             thread::sleep(Duration::from_millis(20));
         }
         self.closed = true;
+        self.stopping = false;
+        self.stop_deadline = None;
         self.segments(false)?;
         Ok(())
+    }
+    /// Ask the producer to exit without blocking the caller. `reap` finalizes it later,
+    /// so a slow encoder can never stall the daemon tick.
+    pub fn request_stop(&mut self) {
+        if self.closed || self.stopping {
+            return;
+        }
+        self.stopping = true;
+        self.stop_deadline = Some(Instant::now() + Duration::from_secs(10));
+        if self.producer.try_wait().ok().flatten().is_none() {
+            unsafe {
+                libc::kill(self.producer.id() as i32, libc::SIGINT);
+            }
+        }
+    }
+    /// Finalize an asynchronous stop; true once the track is closed.
+    pub fn reap(&mut self) -> bool {
+        if self.closed {
+            return true;
+        }
+        if !self.stopping {
+            return false;
+        }
+        let exited = matches!(self.producer.try_wait(), Ok(Some(_)));
+        if !exited {
+            if !self.stop_deadline.is_some_and(|deadline| Instant::now() > deadline) {
+                return false;
+            }
+            let _ = self.producer.kill();
+            let _ = self.producer.wait();
+        }
+        self.closed = true;
+        self.stopping = false;
+        self.stop_deadline = None;
+        let _ = self.segments(false);
+        true
     }
     pub fn segments(&mut self, include_active: bool) -> Result<Vec<Segment>> {
         if let Ok(s) = fs::read_to_string(self.path.join("%08d.mkv.ts")) {
@@ -140,6 +186,7 @@ impl Track {
             f.read_to_string(&mut appended)?;
             self.csv_offset = f.stream_position()?;
             self.pending.push_str(&appended);
+            let before = self.rows.len();
             if let Some(i) = self.pending.rfind('\n') {
                 let complete = self.pending[..=i].to_string();
                 self.pending = self.pending[i + 1..].to_string();
@@ -165,6 +212,11 @@ impl Track {
                         }
                     }
                 }
+            }
+            // Freshness follows newly produced media only. A pruned or archived row is
+            // still absent here, so deleting old files can never look like a stall.
+            if self.rows.len() > before {
+                self.last_new_segment_at = now() - self.origin;
             }
         }
         let mut rows = self.rows.clone();
@@ -344,5 +396,43 @@ mod storage_tests {
         interval(&mut t.presence, false, 10.);
         assert!(t.active_in(0., 20.));
         assert!(!t.active_in(60., 120.));
+    }
+    #[test]
+    fn freshness_advances_only_for_new_media_and_survives_pruning() {
+        let root = tempfile::tempdir().unwrap();
+        let mut t = track(root.path());
+        t.offset = 0.;
+        t.last_new_segment_at = 0.;
+        let mut listing = String::new();
+        for i in 0..3 {
+            let p = t.path.join(format!("{i:08}.mkv"));
+            fs::write(&p, vec![i as u8; 100]).unwrap();
+            listing.push_str(&format!("{},{},{}\n", p.display(), i * 2, i * 2 + 2));
+        }
+        fs::write(t.path.join("segments.csv"), listing).unwrap();
+        assert_eq!(t.segments(false).unwrap().len(), 3);
+        assert!(t.last_new_segment_at > 0., "new media must refresh freshness");
+        let fresh = t.last_new_segment_at;
+        // No new rows: repeated polling must not move the clock.
+        assert_eq!(t.segments(false).unwrap().len(), 3);
+        assert_eq!(t.last_new_segment_at, fresh);
+        // Ring rotation deletes the first segment exactly like the ~300 s prune.
+        t.prune(4., None, root.path()).unwrap();
+        assert!(!t.path.join("00000000.mkv").exists());
+        assert_eq!(t.last_new_segment_at, fresh, "pruning is not a stall");
+    }
+    #[test]
+    fn asynchronous_stop_is_reaped_without_blocking_the_caller() {
+        let root = tempfile::tempdir().unwrap();
+        let mut t = track(root.path());
+        t.request_stop();
+        assert!(!t.closed);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !t.reap() {
+            assert!(Instant::now() < deadline, "producer did not exit in time");
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(t.closed);
+        assert!(!t.stopping);
     }
 }
