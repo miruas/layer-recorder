@@ -2,6 +2,7 @@
 
 ## 0.8.0 (unreleased)
 
+- Keep healthy captures alive: track new segments instead of the first replay file so pruning never restarts a working encoder, and debounce PipeWire selector changes so transient node churn no longer stops and respawns application audio.
 - Add validated advanced GSR capture controls, all source modifiers and exact native CLI passthrough alongside managed independent-source recording.
 - Add native Rust original-video quick export for eligible complete clips, with independent audio mixing and conservative render fallbacks for edits/cuts.
 - Simplify proven redundant export filters and expose codec-specific render speed controls without changing default quality.

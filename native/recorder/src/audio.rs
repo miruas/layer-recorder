@@ -235,6 +235,42 @@ pub fn groups(nodes: &BTreeMap<u64, Value>) -> Vec<Group> {
     }
     groups.into_values().collect()
 }
+/// A PipeWire node set must stay unchanged this long before its selector is applied.
+pub const SELECTOR_STABLE: f64 = 2.5;
+/// Time after which the replacement track is trusted enough to retire the old one.
+pub const SUCCESSOR_GRACE: f64 = 0.5;
+/// Remember when each present (group, selector) pair was first seen. Pairs that vanish
+/// from the graph lose their timestamp, so only a selector that persists becomes stable.
+pub fn observe_candidates(
+    candidates: &mut BTreeMap<(String, String), f64>,
+    groups: &[Group],
+    elapsed: f64,
+) {
+    candidates.retain(|(key, selector), _| {
+        groups
+            .iter()
+            .any(|g| g.key == *key && g.selector == *selector)
+    });
+    for g in groups {
+        candidates
+            .entry((g.key.clone(), g.selector.clone()))
+            .or_insert(elapsed);
+    }
+}
+pub fn selector_stable(
+    candidates: &BTreeMap<(String, String), f64>,
+    group: &Group,
+    elapsed: f64,
+) -> bool {
+    candidates
+        .get(&(group.key.clone(), group.selector.clone()))
+        .is_some_and(|seen| elapsed - *seen >= SELECTOR_STABLE)
+}
+/// An orphaned track may be retired only after the change persisted and a replacement
+/// is running, or after the application's audio disappeared entirely.
+pub fn orphan_ready(since: f64, elapsed: f64, has_successor: bool, source_gone: bool) -> bool {
+    elapsed - since >= SELECTOR_STABLE && (has_successor || source_gone)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +309,63 @@ mod tests {
         assert_eq!(label("org.mozilla.firefox"), "Firefox");
         assert_eq!(label("a/b"), "a_b");
         assert_eq!(label(".."), "");
+    }
+    fn group(key: &str, selector: &str) -> Group {
+        Group {
+            key: key.into(),
+            meta: json!({"type":"audio","name":"QA"}),
+            nodes: vec![1],
+            active: true,
+            selector: selector.into(),
+        }
+    }
+    #[test]
+    fn transient_node_churn_never_makes_a_selector_stable() {
+        let mut candidates = BTreeMap::new();
+        let original = vec![group("app:sober:media", "app:layer-node:1")];
+        observe_candidates(&mut candidates, &original, 10.);
+        // A reconfiguration exposes a new node for one second and then the old one returns.
+        let churn = vec![group("app:sober:media", "app:layer-node:9")];
+        observe_candidates(&mut candidates, &churn, 11.);
+        assert!(!selector_stable(&candidates, &churn[0], 12.));
+        assert!(!candidates.contains_key(&(
+            "app:sober:media".into(),
+            "app:layer-node:1".into()
+        )));
+        // The old selector returning is re-observed; the running track simply matches it
+        // again, so no spawn is needed. The transient node must be forgotten.
+        observe_candidates(&mut candidates, &original, 12.2);
+        assert!(candidates.contains_key(&("app:sober:media".into(), "app:layer-node:1".into())));
+        assert!(!candidates.contains_key(&("app:sober:media".into(), "app:layer-node:9".into())));
+    }
+    #[test]
+    fn a_continuously_present_selector_stays_stable() {
+        let mut candidates = BTreeMap::new();
+        let groups = vec![group("app:sober:media", "app:layer-node:1")];
+        observe_candidates(&mut candidates, &groups, 10.);
+        // Polling an unchanged graph must not reset the stability clock.
+        for elapsed in [10.5, 11., 12., 13.] {
+            observe_candidates(&mut candidates, &groups, elapsed);
+        }
+        assert!(selector_stable(&candidates, &groups[0], 12.5));
+    }
+    #[test]
+    fn permanent_node_change_becomes_stable_after_the_window() {
+        let mut candidates = BTreeMap::new();
+        let original = vec![group("app:sober:media", "app:layer-node:1")];
+        observe_candidates(&mut candidates, &original, 5.);
+        let changed = vec![group("app:sober:media", "app:layer-node:9")];
+        for elapsed in [6., 7., 8.] {
+            observe_candidates(&mut candidates, &changed, elapsed);
+        }
+        assert!(!selector_stable(&candidates, &changed[0], 8.4));
+        assert!(selector_stable(&candidates, &changed[0], 8.5));
+    }
+    #[test]
+    fn orphan_is_retired_only_with_a_replacement_or_a_gone_source() {
+        assert!(!orphan_ready(10., 11., true, false));
+        assert!(!orphan_ready(10., 12.6, false, false));
+        assert!(orphan_ready(10., 12.5, true, false));
+        assert!(orphan_ready(10., 12.5, false, true));
     }
 }
